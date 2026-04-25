@@ -1,0 +1,6 @@
+{
+  "name": "ARCenter",
+  "description": "Chat with Gemini to explore and understand \"Korea Architectrue Legal Documentation\" using the URL Context tool.",
+  "requestFramePermissions": [],
+  "prompt": ""
+}
