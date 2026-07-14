@@ -1,6 +1,6 @@
 {
   "name": "ARCenter",
-  "description": "Chat with Gemini to explore and understand \"Korea Architectrue Legal Documentation\" using the URL Context tool.",
+  "description": "건축법규 검토 어시스턴트: 한국 건축법규 데이터를 기반으로 한 AI 채팅 및 대화 기록 관리 도구입니다.",
   "requestFramePermissions": [],
-  "prompt": ""
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

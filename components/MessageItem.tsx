@@ -9,15 +9,6 @@ import hljs from 'highlight.js';
 import { ChatMessage, MessageSender } from '../types';
 import { User, Sparkles, AlertTriangle } from 'lucide-react';
 
-// Configure marked to use highlight.js for syntax highlighting
-marked.setOptions({
-  highlight: function(code, lang) {
-    const language = hljs.getLanguage(lang) ? lang : 'plaintext';
-    return hljs.highlight(code, { language }).value;
-  },
-  langPrefix: 'hljs language-',
-} as any);
-
 // Custom renderer to open links in new tabs
 const renderer = new marked.Renderer();
 const linkRenderer = renderer.link;
@@ -25,6 +16,18 @@ renderer.link = (args: any) => {
     const html = linkRenderer.call(renderer, args);
     return html.replace(/^<a /, '<a target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" ');
 };
+
+// Configure marked with highlight.js
+marked.setOptions({
+  renderer,
+  gfm: true,
+  breaks: true,
+});
+
+async function highlightCode(code: string, lang: string): Promise<string> {
+  const language = hljs.getLanguage(lang) ? lang : 'plaintext';
+  return hljs.highlight(code, { language }).value;
+}
 
 interface MessageItemProps {
   message: ChatMessage;

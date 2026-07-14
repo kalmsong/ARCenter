@@ -4,14 +4,20 @@
 */
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { ChatMessage, MessageSender, URLGroup, KnowledgeFile, KnowledgeUrl, ToastNotification, PersonalRule } from './types';
+import { ChatMessage, MessageSender, URLGroup, KnowledgeFile, KnowledgeUrl, ToastNotification, PersonalRule, ChatSession } from './types';
 // FIX: Import `getInitialSuggestions` and `extractPrinciples` from `geminiService` to resolve reference error.
 import { generateContent, selectRelevantDocuments, getInitialSuggestions, extractPrinciples } from './services/geminiService';
 import KnowledgeBaseManager from './components/KnowledgeBaseManager';
 import ChatInterface from './components/ChatInterface';
+import ProjectDetailPane from './components/ProjectDetailPane';
+import { DocumentViewerPane } from './components/DocumentViewerPane';
+import { ViewerConfig } from './types';
 import Tutorial from './components/Tutorial';
+import LoginScreen from './components/LoginScreen';
 import { fileToBase64 } from './utils/fileUtils';
 import { analyzeProjectAddress } from './services/geminiService';
+import { fetchLandEumData, fetchApplicableLaws } from './services/airtectApi';
+import { Layout, MessageSquare, X } from 'lucide-react';
 import { 
   auth, 
   db, 
@@ -100,7 +106,7 @@ const INITIAL_URL_GROUPS: URLGroup[] = [
   { id: 'root', name: '법제처', parentId: null, files: [], urls: [] },
   { id: 'national-laws', name: '법령', urls: [], files: [], parentId: 'root' },
   { id: 'local-ordinances', name: '자치법규', urls: [], files: [], parentId: 'root' },
-  { id: 'projects', name: '내 프로젝트', parentId: null, files: [], urls: [] },
+  { id: 'projects', name: '내 프로젝트', parentId: null, files: [], urls: [], isProject: true },
   { id: 'office-examples', name: '법규검토서 예시', urls: [], files: [], parentId: null },
 
   // --- New National Law Categories ---
@@ -161,6 +167,7 @@ const createWelcomeMessage = (): ChatMessage => ({
   text: '건축법규검토 어시스턴트에 오신 것을 환영합니다! 좌측 자료실에서 탐색할 법규 그룹을 선택하고 질문을 시작하세요.',
   sender: MessageSender.SYSTEM,
   timestamp: new Date(),
+  sessionId: 'system',
   groupId: 'system',
   uid: 'system'
 });
@@ -171,8 +178,17 @@ const App: React.FC = () => {
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [urlGroups, setUrlGroups] = useState<URLGroup[]>([]);
   const [activeUrlGroupId, setActiveUrlGroupId] = useState<string>('');
+  const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string>('');
+  const [viewingProjectId, setViewingProjectId] = useState<string | null>(null);
+  const [viewerConfig, setViewerConfig] = useState<ViewerConfig>({ type: 'none' });
+  const [isRightDrawerOpen, setIsRightDrawerOpen] = useState<boolean>(false);
+  const [rightDrawerTab, setRightDrawerTab] = useState<'chat' | 'viewer'>('chat');
   const [personalRules, setPersonalRules] = useState<PersonalRule[]>([]);
-  const [chatMessages, setChatMessages] = useState<Record<string, ChatMessage[]>>({});
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [isGroupsLoading, setIsGroupsLoading] = useState(false);
+  const [isSessionsLoading, setIsSessionsLoading] = useState(false);
+  const [isMessagesLoading, setIsMessagesLoading] = useState(false);
   const [isRulesModalOpen, setIsRulesModalOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
@@ -194,73 +210,17 @@ const App: React.FC = () => {
       } else {
         // Clear data when logged out
         setUrlGroups(INITIAL_URL_GROUPS);
-        setChatMessages({});
+        setChatMessages([]);
         setPersonalRules([]);
+        setChatSessions([]);
+        setActiveSessionId('');
         setActiveUrlGroupId(INITIAL_URL_GROUPS[0].id);
       }
     });
     return () => unsubscribe();
   }, []);
 
-  // Firestore Listeners
-  useEffect(() => {
-    if (!user || !isAuthReady) return;
 
-    // Listen for groups
-    const groupsQuery = query(collection(db, 'groups'), where('uid', '==', user.uid));
-    const unsubscribeGroups = onSnapshot(groupsQuery, (snapshot) => {
-      const groupsData = snapshot.docs.map(doc => doc.data() as URLGroup);
-      if (groupsData.length > 0) {
-        setUrlGroups(groupsData);
-        // Set active group if not set
-        setActiveUrlGroupId(prev => {
-          if (prev && groupsData.some(g => g.id === prev)) return prev;
-          return groupsData[0].id;
-        });
-      } else {
-        // Initialize default groups for new user
-        const batch = writeBatch(db);
-        INITIAL_URL_GROUPS.forEach(group => {
-          const groupRef = doc(collection(db, 'groups'), group.id);
-          batch.set(groupRef, { ...group, uid: user.uid, createdAt: Timestamp.now() });
-        });
-        batch.commit().then(() => {
-          setUrlGroups(INITIAL_URL_GROUPS.map(g => ({ ...g, uid: user.uid })));
-          setActiveUrlGroupId(INITIAL_URL_GROUPS[0].id);
-        });
-      }
-    });
-
-    // Listen for user profile (personal rules)
-    const unsubscribeUser = onSnapshot(doc(db, 'users', user.uid), (doc) => {
-      if (doc.exists()) {
-        const data = doc.data();
-        if (data.personalRules) setPersonalRules(data.personalRules);
-      }
-    });
-
-    // Listen for chats
-    const chatsQuery = query(collection(db, 'chats'), where('uid', '==', user.uid));
-    const unsubscribeChats = onSnapshot(chatsQuery, (snapshot) => {
-      const messages = snapshot.docs.map(doc => doc.data() as ChatMessage);
-      const groupedMessages: Record<string, ChatMessage[]> = {};
-      messages.forEach(msg => {
-        if (!groupedMessages[msg.groupId]) groupedMessages[msg.groupId] = [];
-        groupedMessages[msg.groupId].push({ ...msg, timestamp: new Date(msg.timestamp) });
-      });
-      // Sort by timestamp
-      Object.keys(groupedMessages).forEach(key => {
-        groupedMessages[key].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-      });
-      setChatMessages(groupedMessages);
-    });
-
-    return () => {
-      unsubscribeGroups();
-      unsubscribeUser();
-      unsubscribeChats();
-    };
-  }, [user, isAuthReady]);
 
   const handleLogin = async () => {
     try {
@@ -289,7 +249,14 @@ const App: React.FC = () => {
   const MAX_FILES_PER_GROUP = 10;
   
   const [isResizing, setIsResizing] = useState(false);
-  const [sidebarWidth, setSidebarWidth] = useState(360);
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = localStorage.getItem('archiAssistantSidebarWidth');
+    if (saved) {
+      const parsed = parseInt(saved, 10);
+      return isNaN(parsed) ? 750 : Math.max(500, parsed);
+    }
+    return 750;
+  });
   const appRef = useRef<HTMLDivElement>(null);
 
   const [notifications, setNotifications] = useState<ToastNotification[]>([]);
@@ -328,8 +295,170 @@ const App: React.FC = () => {
       };
       setNotifications(prev => [...prev, newNotification]);
   }, []);
+
+  // Firestore Listeners
+  useEffect(() => {
+    if (!user || !isAuthReady) {
+      setIsGroupsLoading(false);
+      return;
+    }
+
+    setIsGroupsLoading(true);
+    // Listen for groups
+    const groupsQuery = query(collection(db, 'groups'), where('uid', '==', user.uid));
+    const unsubscribeGroups = onSnapshot(groupsQuery, (snapshot) => {
+      const groupsData = snapshot.docs.map(doc => {
+        const data = doc.data() as URLGroup;
+        // Ensure the root projects folder is correctly flagged as a project group for all users
+        const isProjectRoot = data.isProject || doc.id.endsWith('-projects') || data.id === 'projects';
+        return { 
+          ...data, 
+          id: doc.id,
+          isProject: isProjectRoot
+        } as URLGroup;
+      });
+      if (groupsData.length > 0) {
+        setUrlGroups(groupsData);
+        // Set active group if not set
+        setActiveUrlGroupId(prev => {
+          if (prev && groupsData.some(g => g.id === prev)) return prev;
+          return groupsData[0].id;
+        });
+        setIsGroupsLoading(false);
+      } else {
+        // Initialize default groups for new user with consistent IDs to maintain hierarchy
+        const batch = writeBatch(db);
+        
+        // Helper to get consistent user-specific IDs
+        const getUId = (id: string) => `${user.uid}-${id}`;
+
+        INITIAL_URL_GROUPS.forEach(group => {
+          const userGroupId = getUId(group.id);
+          const parentId = group.parentId ? getUId(group.parentId) : null;
+          const groupRef = doc(db, 'groups', userGroupId);
+          batch.set(groupRef, { 
+            ...group, 
+            id: userGroupId, 
+            parentId: parentId,
+            uid: user.uid, 
+            createdAt: Date.now() 
+          });
+        });
+        batch.commit()
+          .then(() => {
+            setIsGroupsLoading(false);
+          })
+          .catch((error) => {
+            console.error('Error committing default groups:', error);
+            addNotification(`기본 자료실 폴더 생성 실패: ${error.message || error}`, 'error');
+            setIsGroupsLoading(false);
+          });
+      }
+    }, (error) => {
+      console.error('Error fetching groups:', error);
+      addNotification(`자료실 폴더를 불러오지 못했습니다 (권한 에러): ${error.message || error}`, 'error');
+      setIsGroupsLoading(false);
+    });
+
+    // Listen for user profile (personal rules)
+    const unsubscribeUser = onSnapshot(doc(db, 'users', user.uid), (doc) => {
+      if (doc.exists()) {
+        const data = doc.data();
+        if (data.personalRules) setPersonalRules(data.personalRules);
+      }
+    }, (error) => {
+      console.error('Error fetching user profile:', error);
+      addNotification(`사용자 프로필을 불러오지 못했습니다: ${error.message || error}`, 'error');
+    });
+
+    return () => {
+      unsubscribeGroups();
+      unsubscribeUser();
+    };
+  }, [user, isAuthReady, addNotification]);
+
+  // Listen for Sessions of active folder
+  useEffect(() => {
+    if (!user || !activeUrlGroupId) {
+      setChatSessions([]);
+      setActiveSessionId('');
+      setIsSessionsLoading(false);
+      return;
+    }
+
+    setIsSessionsLoading(true);
+    const sessionsQuery = query(
+      collection(db, 'groups', activeUrlGroupId, 'sessions'), 
+      where('uid', '==', user.uid)
+    );
+    
+    const unsubscribeSessions = onSnapshot(sessionsQuery, (snapshot) => {
+      const sessions = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          ...data,
+          createdAt: typeof data.createdAt === 'number' ? new Date(data.createdAt) : (data.createdAt as any).toDate ? (data.createdAt as any).toDate() : new Date()
+        } as ChatSession;
+      });
+      
+      sessions.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      setChatSessions(sessions);
+      
+      if (sessions.length > 0) {
+        setActiveSessionId(prev => {
+          if (prev && sessions.some(s => s.id === prev)) return prev;
+          return sessions[0].id;
+        });
+      } else {
+        // We don't auto-create sessions anymore. 
+        // User starts a new one via handleCreateSession or just typing if activeSessionId is empty.
+        setActiveSessionId('');
+      }
+      setIsSessionsLoading(false);
+    }, (error) => {
+      console.error('Error fetching sessions:', error);
+      addNotification(`대화 세션을 불러오지 못했습니다: ${error.message || error}`, 'error');
+      setIsSessionsLoading(false);
+    });
+
+    return () => unsubscribeSessions();
+  }, [user, activeUrlGroupId, addNotification]);
+
+  // Listen for Messages of active session
+  useEffect(() => {
+    if (!user || !activeUrlGroupId || !activeSessionId) {
+      setChatMessages([]);
+      setIsMessagesLoading(false);
+      return;
+    }
+
+    setIsMessagesLoading(true);
+    const messagesQuery = query(
+      collection(db, 'groups', activeUrlGroupId, 'sessions', activeSessionId, 'messages'),
+      where('uid', '==', user.uid)
+    );
+
+    const unsubscribeMessages = onSnapshot(messagesQuery, (snapshot) => {
+      const msgs = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          ...data,
+          timestamp: typeof data.timestamp === 'number' ? new Date(data.timestamp) : (data.timestamp as any).toDate ? (data.timestamp as any).toDate() : new Date()
+        } as ChatMessage;
+      });
+      msgs.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+      setChatMessages(msgs);
+      setIsMessagesLoading(false);
+    }, (error) => {
+      console.error('Error fetching messages:', error);
+      addNotification(`대화 메시지를 불러오지 못했습니다: ${error.message || error}`, 'error');
+      setIsMessagesLoading(false);
+    });
+
+    return () => unsubscribeMessages();
+  }, [user, activeUrlGroupId, activeSessionId, addNotification]);
   
-  const currentChatMessages = useMemo(() => chatMessages[activeUrlGroupId] || [], [chatMessages, activeUrlGroupId]);
+  const currentChatMessages = useMemo(() => chatMessages, [chatMessages]);
 
   const handleMouseDown = (e: React.MouseEvent) => {
       e.preventDefault();
@@ -344,8 +473,8 @@ const App: React.FC = () => {
       if (isResizing && appRef.current) {
           const appRect = appRef.current.getBoundingClientRect();
           const newWidth = e.clientX - appRect.left;
-          const minWidth = 350;
-          const maxWidth = appRect.width * 0.7; 
+          const minWidth = 500;
+          const maxWidth = appRect.width * 0.8; 
           const clampedWidth = Math.max(minWidth, Math.min(newWidth, maxWidth));
           setSidebarWidth(clampedWidth);
       }
@@ -366,6 +495,51 @@ const App: React.FC = () => {
     localStorage.setItem('archiAssistantSidebarWidth', sidebarWidth.toString());
   }, [sidebarWidth]);
 
+  const [rightDrawerWidth, setRightDrawerWidth] = useState<number>(() => {
+    const saved = localStorage.getItem('archiAssistantRightDrawerWidth');
+    if (saved) {
+      const parsed = parseInt(saved, 10);
+      return isNaN(parsed) ? 800 : Math.max(450, parsed);
+    }
+    return 800;
+  });
+  const [isResizingRight, setIsResizingRight] = useState(false);
+
+  const handleRightMouseDown = (e: React.MouseEvent) => {
+      e.preventDefault();
+      setIsResizingRight(true);
+  };
+
+  const handleRightMouseUp = useCallback(() => {
+      setIsResizingRight(false);
+  }, []);
+
+  const handleRightMouseMove = useCallback((e: MouseEvent) => {
+      if (isResizingRight && appRef.current) {
+          const appRect = appRef.current.getBoundingClientRect();
+          const newWidth = appRect.right - e.clientX;
+          const minWidth = 450;
+          const maxWidth = appRect.width * 0.95; 
+          const clampedWidth = Math.max(minWidth, Math.min(newWidth, maxWidth));
+          setRightDrawerWidth(clampedWidth);
+      }
+  }, [isResizingRight]);
+
+  useEffect(() => {
+      if (isResizingRight) {
+          window.addEventListener('mousemove', handleRightMouseMove);
+          window.addEventListener('mouseup', handleRightMouseUp);
+      }
+      return () => {
+          window.removeEventListener('mousemove', handleRightMouseMove);
+          window.removeEventListener('mouseup', handleRightMouseUp);
+      };
+  }, [isResizingRight, handleRightMouseMove, handleRightMouseUp]);
+
+  useEffect(() => {
+    localStorage.setItem('archiAssistantRightDrawerWidth', rightDrawerWidth.toString());
+  }, [rightDrawerWidth]);
+
   const activeGroup = useMemo(() => urlGroups.find(group => group.id === activeUrlGroupId), [urlGroups, activeUrlGroupId]);
 
   const activeGroupPath = useMemo(() => {
@@ -384,15 +558,23 @@ const App: React.FC = () => {
 
 
   const getAllDescendantIds = useCallback((groupId: string, groups: URLGroup[]): string[] => {
-    const children = groups.filter(g => g.parentId === groupId);
-    if (children.length === 0) return [];
+    const visited = new Set<string>();
+    const getRecursive = (id: string): string[] => {
+      if (visited.has(id)) return [];
+      visited.add(id);
+      
+      const children = groups.filter(g => g.parentId === id);
+      if (children.length === 0) return [];
+      
+      const descendantIds: string[] = [];
+      for (const child of children) {
+        descendantIds.push(child.id);
+        descendantIds.push(...getRecursive(child.id));
+      }
+      return descendantIds;
+    };
     
-    const descendantIds: string[] = [];
-    for (const child of children) {
-      descendantIds.push(child.id);
-      descendantIds.push(...getAllDescendantIds(child.id, groups));
-    }
-    return descendantIds;
+    return getRecursive(groupId);
   }, []);
 
   const { urlsForApi, filesForApi } = useMemo(() => {
@@ -411,28 +593,34 @@ const App: React.FC = () => {
 
   // Effect for the initial welcome message and API key check
   useEffect(() => {
-    if (!process.env.API_KEY) {
-      addNotification('오류: Gemini API 키(process.env.API_KEY)가 설정되지 않았습니다. 애플리케이션을 사용하려면 이 환경 변수를 설정하세요.', 'error');
-    }
+    // API key check moved to server-side for security and to avoid client-side crashes
   }, [addNotification]);
 
-  // Effect for handling group changes (new chat, new suggestions)
-  useEffect(() => {
-    // Check if chat history for this group exists. If not, create it.
-    setChatMessages(prev => {
-        if (prev[activeUrlGroupId]) {
-            return prev; // History exists, do nothing
-        }
-        // No history, create it with a welcome message
-        return {
-            ...prev,
-            [activeUrlGroupId]: [createWelcomeMessage()]
-        };
-    });
+  // Handle session creation
+  const handleCreateSession = async () => {
+    if (!user || !activeUrlGroupId) return;
+    
+    // Lazy creation: just generate an ID and clear messages. 
+    // Actual session doc created on first message.
+    const newSessionId = `session-${Date.now()}`;
+    setActiveSessionId(newSessionId);
+    setChatMessages([]);
+    addNotification('새로운 상담을 시작합니다.', 'info');
+  };
 
-    setInitialQuerySuggestions([]);
+  const handleDeleteSession = async (sessionId: string) => {
+    if (!user || !activeUrlGroupId) return;
 
-  }, [activeUrlGroupId, urlGroups]);
+    try {
+      await deleteDoc(doc(db, 'groups', activeUrlGroupId, 'sessions', sessionId));
+      if (activeSessionId === sessionId) {
+        setActiveSessionId('');
+      }
+      addNotification('대화 기록이 삭제되었습니다.', 'info');
+    } catch (e: any) {
+      addNotification(`삭제 실패: ${e.message}`, 'error');
+    }
+  };
 
 
   const handleFetchSuggestions = useCallback(async () => {
@@ -585,10 +773,22 @@ const App: React.FC = () => {
 
   const handleRemoveFile = (fileId: string) => {
     if (!user) return;
-    const group = urlGroups.find(g => g.id === activeUrlGroupId);
+    const group = urlGroups.find(g => g.files.some(f => f.id === fileId));
     if (!group) return;
 
     const updatedGroup = { ...group, files: group.files.filter(file => file.id !== fileId) };
+    setDoc(doc(db, 'groups', group.id), updatedGroup);
+  };
+  
+  const handleUpdateFile = (fileId: string, updatedData: Partial<KnowledgeFile>) => {
+    if (!user) return;
+    const group = urlGroups.find(g => g.files.some(f => f.id === fileId));
+    if (!group) return;
+
+    const updatedGroup = { 
+        ...group, 
+        files: group.files.map(file => file.id === fileId ? { ...file, ...updatedData } : file) 
+    };
     setDoc(doc(db, 'groups', group.id), updatedGroup);
   };
   
@@ -615,24 +815,15 @@ const App: React.FC = () => {
     const descendantIds = getAllDescendantIds(groupId, urlGroups);
     const idsToRemove = [groupId, ...descendantIds];
     
-    const hasChildren = descendantIds.length > 0;
-    const confirmationMessage = `${hasChildren ? '이 그룹에 속한 모든 하위 그룹도 함께 삭제됩니다. ' : ''}정말 "${groupToDelete.name}" 그룹을 삭제하시겠습니까?`;
-
-    if (window.confirm(confirmationMessage)) {
-      const batch = writeBatch(db);
-      idsToRemove.forEach(id => {
-        batch.delete(doc(db, 'groups', id));
-        // Also delete associated chats
-        const groupMessages = chatMessages[id] || [];
-        groupMessages.forEach(msg => {
-          batch.delete(doc(db, 'chats', msg.id));
-        });
-      });
-      await batch.commit();
-      
-      if (idsToRemove.includes(activeUrlGroupId)) {
-        setActiveUrlGroupId(groupToDelete.parentId || urlGroups.find(g => !idsToRemove.includes(g.id))?.id || '');
-      }
+    // 팝업 없이 바로 삭제 진행
+    const batch = writeBatch(db);
+    idsToRemove.forEach(id => {
+      batch.delete(doc(db, 'groups', id));
+    });
+    await batch.commit();
+    
+    if (idsToRemove.includes(activeUrlGroupId)) {
+      setActiveUrlGroupId(groupToDelete.parentId || urlGroups.find(g => !idsToRemove.includes(g.id))?.id || '');
     }
   };
 
@@ -648,7 +839,12 @@ const App: React.FC = () => {
     if (!user) return;
     const group = urlGroups.find(g => g.id === groupId);
     if (group) {
-      setDoc(doc(db, 'groups', groupId), { ...group, projectAddress: address });
+      const addresses = address.split('\n').map(a => a.trim()).filter(a => a !== '');
+      setDoc(doc(db, 'groups', groupId), { 
+        ...group, 
+        projectAddress: address,
+        projectAddresses: addresses 
+      });
     }
   };
 
@@ -688,33 +884,251 @@ const App: React.FC = () => {
         });
       });
 
-      const projectGroup = urlGroups.find(g => g.id === groupId);
-      if (projectGroup) {
-        const existingUrls = new Set(projectGroup.urls.map(u => u.url));
-        const allNewUrls = [...suggestedUrls, ...matchedLibraryUrls];
-        const uniqueNewUrls = allNewUrls.filter(u => !existingUrls.has(u.url));
-        
-        const updatedProjectGroup = { 
-          ...projectGroup, 
-          urls: [...projectGroup.urls, ...uniqueNewUrls] 
-        };
-        await setDoc(doc(db, 'groups', groupId), updatedProjectGroup);
+      // Fetch Land EUM data from external fast API structure
+      let landEumData = null;
+      let lawsData = null;
+      const topAddress = address.split('\n')[0].trim();
+      try {
+         // This serves as the integration with api.airtect.kr
+         // We pass the top-most address line for initial lookup
+         landEumData = await fetchLandEumData(topAddress);
+         lawsData = await fetchApplicableLaws(topAddress);
+      } catch (err) {
+         console.warn("Failed to fetch fast api data:", err);
       }
 
-      // 3. Also add matched library folders as linked child groups for reference
+      const projectGroup = urlGroups.find(g => g.id === groupId);
+      
+      let rootLawsFolderId = urlGroups.find(g => g.parentId === groupId && g.name === "[검토] 법규 및 라이브러리 자료")?.id;
+
+      if (lawsData) {
+        // Function to create a hollow folder group
+        const createFolder = async (name: string, parentId: string) => {
+            if (!user) return null;
+            // Check if folder with same name and parent already exists to avoid duplication
+            const existing = urlGroups.find(g => g.parentId === parentId && g.name === name);
+            if (existing) return existing;
+
+            const newGroupId = `group-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+            const newGroup: URLGroup = {
+                id: newGroupId,
+                name,
+                urls: [],
+                files: [],
+                parentId,
+                uid: user.uid
+            };
+            await setDoc(doc(db, 'groups', newGroupId), newGroup);
+            return newGroup;
+        };
+
+        // Create sub-folders for applicable laws
+        const createGroupForLaws = async (name: string, laws: any[], target: string, parentId: string) => {
+            if (!user) return null;
+            
+            // Check if folder with same name and parent already exists
+            const existing = urlGroups.find(g => g.parentId === parentId && g.name === name);
+            
+            const urls = laws.map((law: any, index: number) => ({
+                id: `law-${law.id || index}-${Date.now()}`,
+                // Link that will be intercepted by the app to open the markdown / viewer
+                url: `law://target=${target}&law_id=${law.id}`,
+                name: law.name
+            }));
+
+            if (existing) {
+                const existingUrls = new Set(existing.urls.map(u => u.url));
+                const uniqueNewUrls = urls.filter(u => !existingUrls.has(u.url));
+                if (uniqueNewUrls.length > 0) {
+                    await setDoc(doc(db, 'groups', existing.id), {
+                        ...existing,
+                        urls: [...existing.urls, ...uniqueNewUrls]
+                    });
+                }
+                return existing;
+            }
+
+            const newGroupId = `group-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+            const newGroup: URLGroup = {
+                id: newGroupId,
+                name,
+                urls,
+                files: [],
+                parentId,
+                uid: user.uid
+            };
+            await setDoc(doc(db, 'groups', newGroupId), newGroup);
+            return newGroup;
+        };
+
+        // Create or find root folder for all laws for this project
+        let rootLawsFolder = null;
+        if (rootLawsFolderId) {
+            rootLawsFolder = { id: rootLawsFolderId };
+        } else {
+            rootLawsFolder = await createFolder("[검토] 법규 및 라이브러리 자료", groupId);
+            if (rootLawsFolder) rootLawsFolderId = rootLawsFolder.id;
+        }
+
+        if (rootLawsFolder) {
+            // 1. Add base laws if available
+            if (lawsData.base_laws && Object.keys(lawsData.base_laws).length > 0) {
+                const baseLawsFolder = await createFolder("국가 법령", rootLawsFolder.id);
+                if (baseLawsFolder) {
+                    for (const [category, categoryLaws] of Object.entries(lawsData.base_laws)) {
+                        const lawsArray = categoryLaws as any[];
+                        if (lawsArray && lawsArray.length > 0) {
+                            await createGroupForLaws(`${category}`, lawsArray, 'law', baseLawsFolder.id);
+                        }
+                    }
+                }
+            }
+            
+            // 2. Add regional ordinances if available
+            if (lawsData.regional_ordinances && lawsData.regional_ordinances.length > 0) {
+                const regionName = lawsData.region?.sido_name || lawsData.region?.sigungu_name || "지역";
+                const ordinancesFolder = await createFolder(`자치 조례 (${regionName})`, rootLawsFolder.id);
+                if (ordinancesFolder) {
+                    await createGroupForLaws(`해당 지역 조례 ${regionName}`, lawsData.regional_ordinances, 'ordin', ordinancesFolder.id);
+                }
+            }
+        }
+      }
+
+      // Create an AI Summary Document ONLY if it doesn't exist
+      const existingSummary = projectGroup.files.find(f => f.name === 'AI_법규_요약서.md');
+      let summaryFile: KnowledgeFile | null = null;
+      if (!existingSummary) {
+        const summaryDocId = `summary-${Date.now()}`;
+        const summaryContent = `# AI 대상지 법규 요약서\n\n**대상지:** ${address.split('\n').join(', ')}\n\n## 통합 분석 소견\n해당 대상지는 지구단위계획 및 지역 조례를 바탕으로 검토가 필요합니다. 관련 법규와 기존 라이브러리 자료를 연계하여 주요 조항을 확인하세요.\n\n### 참조 법령 및 기준\n${suggestedLaws.map(law => `- **${law}**`).join('\n')}\n${matchedGroups.map(g => `- **${g.name}** (라이브러리 자료)`).join('\n')}\n\n### 법규 검색 예시 (클릭하여 뷰어 확인)\n- [건축법 제55조 상세보기](law://target=law&law_id=002082&article=55)\n- [국토의 계획 및 이용에 관한 법률](law://target=law&law_id=002081)\n\n*※ 본 요약서는 AI가 발췌한 초안이며, 우측 패널에서 편집할 수 있습니다.*`;
+        
+        summaryFile = {
+            id: summaryDocId,
+            name: 'AI_법규_요약서.md',
+            type: 'document',
+            url: '',
+            content: summaryContent,
+            createdAt: new Date().toISOString(),
+            mimeType: 'text/markdown'
+        };
+      }
+
+      const existingLandEum = projectGroup.files.find(f => f.name === '토지이음_조회자료.md');
+      let landEumFile: KnowledgeFile | null = null;
+      if (landEumData && !existingLandEum) {
+          let mdContent = `# 토지이음 분석자료\n\n**대상지지:** ${topAddress}\n\n`;
+          const formatJsonToMd = (obj: any, level = 3): string => {
+              if (typeof obj !== 'object' || obj === null) return String(obj);
+              let md = '';
+              for (const [k, v] of Object.entries(obj)) {
+                  if (Array.isArray(v)) {
+                      md += `${'#'.repeat(Math.min(level, 6))} ${k}\n`;
+                      v.forEach((item) => {
+                          if (typeof item === 'object') {
+                              md += formatJsonToMd(item, level + 1) + '\n';
+                          } else {
+                              md += `- ${item}\n`;
+                          }
+                      });
+                  } else if (typeof v === 'object' && v !== null) {
+                      md += `${'#'.repeat(Math.min(level, 6))} ${k}\n`;
+                      md += formatJsonToMd(v, level + 1);
+                  } else {
+                      md += `- **${k}**: ${v}\n`;
+                  }
+              }
+              return md;
+          };
+          mdContent += formatJsonToMd(landEumData);
+          
+          landEumFile = {
+              id: `land-eum-${Date.now()}`,
+              name: '토지이음_조회자료.md',
+              type: 'document',
+              url: '',
+              content: mdContent,
+              createdAt: new Date().toISOString(),
+              mimeType: 'text/markdown'
+          };
+      }
+
+      // Update buildingOverview if landEumData is available
+      let updatedBuildingOverview = projectGroup?.buildingOverview || {
+        projectName: projectGroup?.name || '',
+        location: address || '',
+        landCategory: '',
+        landArea: '',
+        mainUsage: '노인복지주택, 판매시설, 업무시설',
+        scale: '주거시설(지상26층)/비주거시설(지상24층)',
+        buildingHeight: '108.30 m',
+        bcr: '59.52%',
+        far: '399.77%',
+        buildingArea: '17,546.61',
+        totalFloorAreaForFar: '117,860.83',
+        totalFloorArea: { above: '155,750.83', below: '0.00', total: '155,750.83' },
+        landscapingArea: '4,451.78',
+        publicOpenSpace: '2,977.68',
+        parkingCount: { legal: '921대', planned: '1,059대', plannedRatio: '115%' },
+        legalValues: { bcr: '60%', far: '400%', landscaping: '대지면적의 15%이상', publicOpenSpace: '대지면적의 10%이상', parking: '115%' }
+      };
+
+      if (landEumData) {
+        const zones = landEumData.regulation?.summary?.zones || [];
+        const landAreaVal = landEumData.land?.landCharacteristics?.lndpcl_ar || '';
+        const bcrMax = landEumData.regulation?.summary?.bcr_max || '';
+        const farMax = landEumData.regulation?.summary?.far_max || '';
+
+        updatedBuildingOverview = {
+          ...updatedBuildingOverview,
+          location: topAddress,
+          landCategory: zones.join(', ') || updatedBuildingOverview.landCategory,
+          landArea: landAreaVal ? `${Number(landAreaVal).toLocaleString()} m²` : updatedBuildingOverview.landArea,
+          legalValues: {
+            ...updatedBuildingOverview.legalValues,
+            bcr: bcrMax ? `${bcrMax}%` : updatedBuildingOverview.legalValues?.bcr || '60%',
+            far: farMax ? `${farMax}%` : updatedBuildingOverview.legalValues?.far || '400%'
+          }
+        };
+      }
+
+      const filesToAdd = [];
+      if (summaryFile) filesToAdd.push(summaryFile);
+      if (landEumFile) filesToAdd.push(landEumFile);
+      
+      await setDoc(doc(db, 'groups', groupId), {
+          ...projectGroup,
+          files: [...projectGroup.files, ...filesToAdd],
+          buildingOverview: updatedBuildingOverview
+      });
+
+      // 3. Neatly structure matched library folders inside a single analysis parent group
       const batch = writeBatch(db);
       let addedFolderCount = 0;
+      
+      const analysisParentId = rootLawsFolderId || `analysis-${groupId}-${Date.now()}`;
+
+      if (!rootLawsFolderId && matchedGroups.length > 0) {
+        batch.set(doc(db, 'groups', analysisParentId), {
+          id: analysisParentId,
+          name: "[검토] 법규 및 라이브러리 자료",
+          urls: [],
+          files: [],
+          parentId: groupId,
+          uid: user.uid
+        });
+        rootLawsFolderId = analysisParentId;
+      }
 
       matchedGroups.forEach(libGroup => {
-        const isAlreadyLinked = urlGroups.some(g => g.parentId === groupId && g.name.includes(libGroup.name));
+        const isAlreadyLinked = urlGroups.some(g => g.parentId === analysisParentId && g.name.includes(libGroup.name));
         if (!isAlreadyLinked) {
           const newGroupId = `linked-${libGroup.id}-${Date.now()}`;
           const linkedGroup: URLGroup = {
             id: newGroupId,
-            name: `[라이브러리] ${libGroup.name}`,
+            name: `${libGroup.name}`,
             urls: [...libGroup.urls],
             files: [...libGroup.files],
-            parentId: groupId,
+            parentId: analysisParentId,
             uid: user.uid
           };
           const groupRef = doc(db, 'groups', newGroupId);
@@ -890,31 +1304,45 @@ const App: React.FC = () => {
   const handleSendMessage = async (query: string) => {
     if (!query.trim() || isLoading || isFetchingSuggestions || !user) return;
 
-    if (!process.env.API_KEY) {
-      addNotification('오류: API 키(process.env.API_KEY)가 설정되지 않았습니다. 메시지를 보내려면 설정하세요.', 'error');
-      return;
-    }
-    
     setIsLoading(true);
     setInitialQuerySuggestions([]); 
 
-    const userMessage: ChatMessage = {
+    let currentSessionId = activeSessionId;
+    
+    if (!currentSessionId) {
+       currentSessionId = `session-${Date.now()}`;
+       setActiveSessionId(currentSessionId);
+    }
+    
+    // Check if session needs to be created in Firestore
+    const sessionDocRef = doc(db, 'groups', activeUrlGroupId, 'sessions', currentSessionId);
+    const sessionSnap = await getDoc(sessionDocRef);
+    if (!sessionSnap.exists()) {
+       await setDoc(sessionDocRef, {
+         id: currentSessionId,
+         title: query.slice(0, 30) + (query.length > 30 ? '...' : ''),
+         createdAt: Date.now(),
+         groupId: activeUrlGroupId,
+         uid: user.uid,
+         isArchived: false
+       });
+    }
+
+    const userMessage: any = {
       id: `user-${Date.now()}`,
       text: query,
       sender: MessageSender.USER,
-      timestamp: Date.now() as any, // Store as number for Firestore
+      timestamp: Date.now(),
+      sessionId: currentSessionId,
       groupId: activeUrlGroupId,
       uid: user.uid
     };
     
     // Optimistically add user message to UI
-    setChatMessages(prev => ({
-      ...prev,
-      [activeUrlGroupId]: [...(prev[activeUrlGroupId] || []), { ...userMessage, timestamp: new Date() }]
-    }));
+    setChatMessages(prev => [...prev, { ...userMessage, timestamp: new Date(), isLoading: false }]);
 
     // Save user message to Firestore
-    setDoc(doc(db, 'chats', userMessage.id), userMessage);
+    setDoc(doc(db, 'groups', activeUrlGroupId, 'sessions', currentSessionId, 'messages', userMessage.id), userMessage);
 
     const modelPlaceholderId = `model-response-${Date.now()}`;
     const modelPlaceholderMessage: ChatMessage = {
@@ -923,25 +1351,24 @@ const App: React.FC = () => {
       sender: MessageSender.MODEL,
       timestamp: new Date(),
       isLoading: true,
+      sessionId: currentSessionId,
       groupId: activeUrlGroupId,
       uid: user.uid
     };
     
-    setChatMessages(prev => ({
-      ...prev,
-      [activeUrlGroupId]: [...(prev[activeUrlGroupId] || []), modelPlaceholderMessage]
-    }));
+    setChatMessages(prev => [...prev, modelPlaceholderMessage]);
     
     try {
+      // ... (rest of the logic)
       const totalDocs = urlsForApi.length + filesForApi.length;
       let finalUrlsForApi = urlsForApi;
       let finalFilesForApi = filesForApi;
 
       // Step 1: Route/Select documents if necessary
       if (!isSearchEnabled && totalDocs > AI_ROUTER_THRESHOLD) {
-        setChatMessages(prev => ({ ...prev, [activeUrlGroupId]: prev[activeUrlGroupId].map(msg => 
+        setChatMessages(prev => prev.map(msg => 
             msg.id === modelPlaceholderMessage.id ? {...msg, text: '관련 자료 선별 중...'} : msg
-        )}));
+        ));
 
         const allDocuments = [
             ...urlsForApi.map(u => ({ id: u.id, name: u.name })),
@@ -959,9 +1386,9 @@ const App: React.FC = () => {
           ? `선별된 ${selectedCount}개 자료를 바탕으로 답변 생성 중...`
           : '관련 자료를 찾지 못했습니다. 일반 지식으로 답변을 시도합니다.';
         
-        setChatMessages(prev => ({ ...prev, [activeUrlGroupId]: prev[activeUrlGroupId].map(msg => 
+        setChatMessages(prev => prev.map(msg => 
             msg.id === modelPlaceholderMessage.id ? {...msg, text: statusText} : msg
-        )}));
+        ));
       }
 
       const URL_CONTEXT_LIMIT = 20;
@@ -993,29 +1420,29 @@ const App: React.FC = () => {
         }
       }
       
-      const finalModelMessage: ChatMessage = {
+      const finalModelMessage: any = {
           id: modelPlaceholderId,
           text: responseText,
           sender: MessageSender.MODEL,
-          timestamp: Date.now() as any,
+          timestamp: Date.now(),
           isLoading: false,
-          urlContext: response.urlContextMetadata,
-          groundingChunks: response.groundingChunks,
+          urlContext: response.urlContextMetadata || [],
+          groundingChunks: response.groundingChunks || [],
           wasSearchEnabled: isSearchEnabled,
-          suggestedRules: suggestedRules.length > 0 ? suggestedRules : undefined,
+          sessionId: currentSessionId,
           groupId: activeUrlGroupId,
           uid: user.uid
       };
+      
+      if (suggestedRules.length > 0) {
+        finalModelMessage.suggestedRules = suggestedRules;
+      }
 
       // Save AI message to Firestore
-      setDoc(doc(db, 'chats', finalModelMessage.id), finalModelMessage);
-
+      setDoc(doc(db, 'groups', activeUrlGroupId, 'sessions', currentSessionId, 'messages', finalModelMessage.id), finalModelMessage);
     } catch (e: any) {
       const errorMessage = e.message || 'AI로부터 응답을 받는 데 실패했습니다.';
-      setChatMessages(prev => ({
-          ...prev,
-          [activeUrlGroupId]: prev[activeUrlGroupId].filter(msg => msg.id !== modelPlaceholderMessage.id)
-      }));
+      setChatMessages(prev => prev.filter(msg => msg.id !== modelPlaceholderMessage.id));
       addNotification(`오류: ${errorMessage}`, 'error');
     } finally {
       setIsLoading(false);
@@ -1037,6 +1464,18 @@ const App: React.FC = () => {
     : (urlsForApi.length > 0 || filesForApi.length > 0
             ? `"${activeGroupPath}"에 대해 질문하기...`
             : "채팅을 시작하려면 자료실에 URL이나 파일을 추가하세요.");
+
+  if (!isAuthReady) {
+    return (
+      <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center">
+        <div className="w-12 h-12 border-4 border-slate-200 border-t-purple-600 rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginScreen onLogin={handleLogin} isLoading={isLoading} />;
+  }
 
   return (
     <div 
@@ -1071,6 +1510,7 @@ const App: React.FC = () => {
             onRenameUrl={handleRenameUrl}
             onAddFiles={handleAddFiles}
             onRemoveFile={handleRemoveFile}
+            onUpdateFile={handleUpdateFile}
             onMoveAsset={handleMoveAsset}
             onCopyUrlToProject={handleCopyUrlToProject}
             maxUrls={MAX_URLS_PER_GROUP}
@@ -1083,11 +1523,17 @@ const App: React.FC = () => {
             onRemoveGroup={handleRemoveUrlGroup}
             onRenameGroup={handleRenameUrlGroup}
             onUpdateGroupAddress={handleUpdateGroupAddress}
+            onUpdateGroup={async (id, data) => {
+              const groupRef = doc(db, 'groups', id);
+              await setDoc(groupRef, data, { merge: true });
+            }}
             onAnalyzeAddress={handleAnalyzeAddress}
             onExportGroups={handleExportGroups}
             onImportGroups={handleImportGroups}
             onShowTutorial={() => setShowTutorial(true)}
             isLoading={isLoading || isFetchingSuggestions}
+            isGroupsLoading={isGroupsLoading}
+            isSessionsLoading={isSessionsLoading}
             personalRules={personalRules}
             onAddRule={(text) => {
               if (!user) return;
@@ -1109,6 +1555,18 @@ const App: React.FC = () => {
               const newRules = personalRules.map(r => r.id === id ? { ...r, text } : r);
               setDoc(doc(db, 'users', user.uid), { personalRules: newRules }, { merge: true });
             }}
+            chatSessions={chatSessions}
+            activeSessionId={activeSessionId}
+            onCreateSession={handleCreateSession}
+            onSwitchSession={setActiveSessionId}
+            onDeleteSession={handleDeleteSession}
+            onViewProjectDetail={setViewingProjectId}
+            onOpenViewer={(config) => {
+              setViewerConfig(config);
+              if (config.type === 'web' || config.type === 'law') {
+                 setIsRightDrawerOpen(true);
+              }
+            }}
           />}
         </div>
 
@@ -1118,32 +1576,99 @@ const App: React.FC = () => {
             onMouseDown={handleMouseDown}
             className="h-full w-1.5 cursor-col-resize bg-gray-200/50 hover:bg-blue-400 transition-colors flex-shrink-0 hidden md:block"
           />
-        )}
+        )}        {/* Main Content Area */}
+        <div className="h-full flex-grow min-w-0 flex bg-[#F8FAFC] relative z-20 overflow-hidden">
+          
+          <div className="flex-1 flex flex-col h-full min-w-0 relative">
+              {/* Main Workspace (Center) */}
+              {viewerConfig.type !== 'none' && viewerConfig.type !== 'web' && viewerConfig.type !== 'law' ? (
+                  <div className="h-full w-full flex flex-col bg-white overflow-hidden animate-in fade-in duration-300">
+                      <DocumentViewerPane 
+                          config={viewerConfig} 
+                          onClose={() => setViewerConfig({ type: 'none' })} 
+                          onUpdateFile={handleUpdateFile} 
+                          isSidebarOpen={isSidebarOpen}
+                          onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+                      />
+                  </div>
+              ) : viewingProjectId ? (
+                  <div className="h-full w-full flex flex-col bg-white overflow-hidden animate-in fade-in duration-300">
+                    <ProjectDetailPane 
+                      projectId={viewingProjectId}
+                      groups={urlGroups}
+                      onClose={() => setViewingProjectId(null)}
+                      onUpdateGroup={async (id, data) => {
+                        const groupRef = doc(db, 'groups', id);
+                        await setDoc(groupRef, data, { merge: true });
+                      }}
+                      onStartChat={() => {
+                        setActiveUrlGroupId(viewingProjectId);
+                        setViewingProjectId(null); // Return to AI Chat in the center
+                      }}
+                      isSidebarOpen={isSidebarOpen}
+                      onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+                    />
+                  </div>
+              ) : (
+                  <div className="h-full w-full flex flex-col bg-white overflow-hidden animate-in fade-in duration-300">
+                      <ChatInterface
+                          messages={currentChatMessages}
+                          onSendMessage={handleSendMessage}
+                          isLoading={isLoading}
+                          isMessagesLoading={isMessagesLoading}
+                          placeholderText={chatPlaceholder}
+                          initialQuerySuggestions={initialQuerySuggestions}
+                          onSuggestedQueryClick={handleSuggestedQueryClick}
+                          isFetchingSuggestions={isFetchingSuggestions}
+                          onFetchSuggestions={handleFetchSuggestions}
+                          onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+                          isSidebarOpen={isSidebarOpen}
+                          isSearchEnabled={isSearchEnabled}
+                          onToggleSearch={handleToggleSearch}
+                          activeGroupPath={isSearchEnabled ? '웹 검색' : activeGroupPath}
+                          activeGroupAddress={activeGroup?.projectAddress}
+                          user={user}
+                          onLogin={handleLogin}
+                          onLogout={handleLogout}
+                          notifications={notifications}
+                          onRemoveNotification={removeNotification}
+                      />
+                  </div>
+              )}
+          </div>
 
+          {/* Right Drawer Resizer */}
+          {isRightDrawerOpen && (
+            <div
+              onMouseDown={handleRightMouseDown}
+              className={`h-full w-1.5 cursor-col-resize hover:bg-purple-400 transition-colors flex-shrink-0 z-40 hidden md:block ${isResizingRight ? 'bg-purple-500' : 'bg-slate-200'}`}
+            />
+          )}
 
-        {/* Chat Interface */}
-        <div className="h-full flex-grow min-w-0">
-          <ChatInterface
-            messages={currentChatMessages}
-            onSendMessage={handleSendMessage}
-            isLoading={isLoading}
-            placeholderText={chatPlaceholder}
-            initialQuerySuggestions={initialQuerySuggestions}
-            onSuggestedQueryClick={handleSuggestedQueryClick}
-            isFetchingSuggestions={isFetchingSuggestions}
-            onFetchSuggestions={handleFetchSuggestions}
-            onToggleSidebar={() => setIsSidebarOpen(true)}
-            isSidebarOpen={isSidebarOpen}
-            isSearchEnabled={isSearchEnabled}
-            onToggleSearch={handleToggleSearch}
-            activeGroupPath={isSearchEnabled ? '웹 검색' : activeGroupPath}
-            activeGroupAddress={activeGroup?.projectAddress}
-            user={user}
-            onLogin={handleLogin}
-            onLogout={handleLogout}
-            notifications={notifications}
-            onRemoveNotification={removeNotification}
-          />
+          {/* Right Drawer - Law Viewer Only */}
+          <div 
+            className={`h-full bg-white border-l border-slate-200 flex flex-col z-30 shadow-2xl overflow-hidden ${isResizingRight ? '' : 'transition-all duration-300'} ${isRightDrawerOpen ? '' : '!w-0 !border-none'}`}
+            style={{ width: isRightDrawerOpen ? `${rightDrawerWidth}px` : '0px' }}
+          >
+              <div className="flex-1 relative overflow-hidden bg-slate-50 h-full w-full">
+                  {(viewerConfig.type === 'web' || viewerConfig.type === 'law') ? (
+                      <DocumentViewerPane 
+                          config={viewerConfig} 
+                          onClose={() => {
+                             setViewerConfig({ type: 'none' });
+                             setIsRightDrawerOpen(false);
+                          }} 
+                          isResizing={isResizing || isResizingRight}
+                          rightDrawerWidth={rightDrawerWidth}
+                          onSetWidth={setRightDrawerWidth}
+                      />
+                  ) : (
+                      <div className="h-full flex flex-col items-center justify-center p-10 text-center text-slate-500 font-medium">
+                         열람 중인 법령/웹 문서가 없습니다.
+                      </div>
+                  )}
+              </div>
+          </div>
         </div>
       </div>
       {showTutorial && <Tutorial onClose={handleTutorialClose} />}

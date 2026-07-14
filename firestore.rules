@@ -86,16 +86,29 @@ service cloud.firestore {
              data.uid == request.auth.uid &&
              data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
              (!('projectAddress' in data) || (data.projectAddress is string && data.projectAddress.size() < 500)) &&
+             (!('projectAddresses' in data) || data.projectAddresses is list) &&
+             (!('lotArea' in data) || (data.lotArea is string && data.lotArea.size() < 100)) &&
+             (!('siteInvestigation' in data) || (data.siteInvestigation is string && data.siteInvestigation.size() < 50000)) &&
+             (!('isProject' in data) || data.isProject is bool) &&
              (!('urls' in data) || data.urls is list) &&
              (!('files' in data) || data.files is list);
     }
 
-    function isValidChat(data) {
-      return data.keys().hasAll(['id', 'text', 'sender', 'timestamp', 'groupId', 'uid']) &&
+    function isValidSession(data) {
+      return data.keys().hasAll(['id', 'title', 'createdAt', 'groupId', 'uid']) &&
              data.uid == request.auth.uid &&
-             data.text is string && data.text.size() > 0 && data.text.size() < 10000 &&
-             data.sender in ['user', 'ai', 'system'] &&
-             data.timestamp is number &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             (data.createdAt is number || data.createdAt is timestamp) &&
+             data.groupId is string;
+    }
+
+    function isValidChat(data) {
+      return data.keys().hasAll(['id', 'text', 'sender', 'timestamp', 'sessionId', 'groupId', 'uid']) &&
+             data.uid == request.auth.uid &&
+             data.text is string && data.text.size() >= 0 && data.text.size() < 100000 &&
+             data.sender in ['user', 'model', 'system', 'ai'] &&
+             (data.timestamp is number || data.timestamp is timestamp) &&
+             data.sessionId is string &&
              data.groupId is string;
     }
 
@@ -115,13 +128,20 @@ service cloud.firestore {
       allow create: if isAuthenticated() && isValidGroup(request.resource.data);
       allow update: if isDocOwner() && isValidGroup(request.resource.data) && uidNotModified();
       allow delete: if isDocOwner();
-    }
 
-    match /chats/{messageId} {
-      allow read: if isAuthenticated() && (resource == null || resource.data.uid == request.auth.uid);
-      allow create: if isAuthenticated() && isValidChat(request.resource.data);
-      allow update: if isDocOwner() && isValidChat(request.resource.data) && uidNotModified();
-      allow delete: if isDocOwner();
+      match /sessions/{sessionId} {
+        allow read: if isAuthenticated() && (resource == null || resource.data.uid == request.auth.uid);
+        allow create: if isAuthenticated() && isValidSession(request.resource.data);
+        allow update: if isDocOwner() && isValidSession(request.resource.data) && uidNotModified();
+        allow delete: if isDocOwner();
+
+        match /messages/{messageId} {
+          allow read: if isAuthenticated() && (resource == null || resource.data.uid == request.auth.uid);
+          allow create: if isAuthenticated() && isValidChat(request.resource.data);
+          allow update: if isDocOwner() && isValidChat(request.resource.data) && uidNotModified();
+          allow delete: if isDocOwner();
+        }
+      }
     }
   }
 }

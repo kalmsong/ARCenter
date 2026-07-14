@@ -85,6 +85,7 @@ interface ChatInterfaceProps {
   onLogout: () => void;
   notifications: ToastNotification[];
   onRemoveNotification: (id: string) => void;
+  isMessagesLoading?: boolean;
 }
 
 const ChatInterface: React.FC<ChatInterfaceProps> = ({ 
@@ -107,6 +108,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   onLogout,
   notifications,
   onRemoveNotification,
+  isMessagesLoading = false,
 }) => {
   const [userQuery, setUserQuery] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -182,18 +184,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
               <span>로그인</span>
             </button>
           )}
-          <button
-            onClick={onToggleSearch}
-            className={`
-              flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all border
-              ${isSearchEnabled 
-                ? 'bg-blue-50 text-blue-700 border-blue-200 shadow-sm' 
-                : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'}
-            `}
-          >
-            <Globe size={14} className={isSearchEnabled ? 'animate-pulse' : ''} />
-            <span className="hidden sm:inline">{isSearchEnabled ? '웹 검색 ON' : '웹 검색 OFF'}</span>
-          </button>
         </div>
       </div>
 
@@ -215,12 +205,27 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
       <div className="flex-grow p-4 overflow-y-auto chat-container bg-gray-50">
         <div className="max-w-4xl mx-auto w-full">
-          {messages.map((msg) => (
-            <MessageItem
-              key={msg.id}
-              message={msg}
-            />
-          ))}
+          {isMessagesLoading ? (
+            <div className="space-y-6 py-4">
+              {[1, 2].map((idx) => (
+                <div key={idx} className={`flex gap-4 ${idx % 2 === 0 ? 'flex-row-reverse' : ''} animate-pulse`}>
+                  <div className="w-8 h-8 rounded-full bg-slate-200 shrink-0"></div>
+                  <div className="space-y-2 flex-grow max-w-md">
+                    <div className="h-3 bg-slate-200 rounded w-24"></div>
+                    <div className="h-3.5 bg-slate-100 rounded w-full"></div>
+                    <div className="h-3 bg-slate-100 rounded w-3/4"></div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            messages.map((msg) => (
+              <MessageItem
+                key={msg.id}
+                message={msg}
+              />
+            ))
+          )}
           
           {canShowSuggestionsArea && hasSuggestionsToShow && onSuggestedQueryClick && (
             <div className="my-4 px-1">

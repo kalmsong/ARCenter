@@ -73,10 +73,25 @@
         "text": { "type": "string" },
         "sender": { "type": "string", "enum": ["user", "ai", "system"] },
         "timestamp": { "type": "number" },
+        "sessionId": { "type": "string" },
         "groupId": { "type": "string" },
         "uid": { "type": "string" }
       },
-      "required": ["id", "text", "sender", "timestamp", "groupId", "uid"]
+      "required": ["id", "text", "sender", "timestamp", "sessionId", "groupId", "uid"]
+    },
+    "ChatSession": {
+      "title": "Chat Session",
+      "description": "A grouping of messages within a project folder.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "groupId": { "type": "string" },
+        "uid": { "type": "string" },
+        "isArchived": { "type": "boolean" }
+      },
+      "required": ["id", "title", "createdAt", "groupId", "uid"]
     }
   },
   "firestore": {
@@ -86,11 +101,15 @@
     },
     "/groups/{groupId}": {
       "schema": "URLGroup",
-      "description": "User's URL and file groups (folders)."
+      "description": "User's URL and file groups (folders/projects)."
     },
-    "/chats/{messageId}": {
+    "/groups/{groupId}/sessions/{sessionId}": {
+      "schema": "ChatSession",
+      "description": "Sessions within a project."
+    },
+    "/groups/{groupId}/sessions/{sessionId}/messages/{messageId}": {
       "schema": "ChatMessage",
-      "description": "Chat message history."
+      "description": "Messages within a session."
     }
   }
 }

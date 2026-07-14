@@ -43,13 +43,13 @@ const Tutorial: React.FC<TutorialProps> = ({ onClose }) => {
     },
     {
       title: "워크스페이스 탭",
-      description: "내 프로젝트와 개인적인 검토 원칙을 관리하는 공간입니다.",
+      description: "프로젝트와 개인적인 검토 원칙을 관리하는 공간입니다.",
       icon: <Briefcase size={24} className="text-purple-500" />,
       targetId: "tutorial-tab-workspace"
     },
     {
-      title: "내 프로젝트",
-      description: "진행 중인 프로젝트별로 자료를 모아보세요. 프로젝트 생성 시 '대상지 주소'를 입력하면 관련 법규(조례 등)를 AI가 자동으로 찾아 제안해 드립니다.",
+      title: "프로젝트",
+      description: "진행 중인 프로젝트별로 자료를 모아보세요. 프로젝트 생성 후 '대상지 주소'를 입력하면 관련 법규(조례 등)를 AI가 자동으로 찾아 제안해 드립니다.",
       icon: <Briefcase size={24} className="text-purple-500" />,
       targetId: "tutorial-subtab-projects"
     },
