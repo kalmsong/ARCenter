@@ -351,7 +351,7 @@ function fromRow(table: Descriptor['table'], row: any): any {
     return {
       id: row.id,
       title: row.title,
-      createdAt: row.created_at,
+      createdAt: row.created_at ? Date.parse(row.created_at) : Date.now(),
       groupId: row.group_id,
       uid: row.owner_id,
       isArchived: row.is_archived,
@@ -363,7 +363,7 @@ function fromRow(table: Descriptor['table'], row: any): any {
       id: row.id,
       text: row.text,
       sender: row.sender,
-      timestamp: row.timestamp,
+      timestamp: row.timestamp ? Date.parse(row.timestamp) : Date.now(),
       urlContext: row.url_context ?? [],
       groundingChunks: row.grounding_chunks ?? [],
       wasSearchEnabled: row.was_search_enabled,
