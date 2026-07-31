@@ -1,7 +1,7 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
-*/
+ */
 
 export enum MessageSender {
   USER = 'user',
@@ -10,8 +10,8 @@ export enum MessageSender {
 }
 
 export interface UrlContextMetadataItem {
-  retrievedUrl: string; // Changed from retrieved_url
-  urlRetrievalStatus: string; // Changed from url_retrieval_status
+  retrievedUrl: string;
+  urlRetrievalStatus: string;
 }
 
 export interface GroundingChunk {
@@ -27,20 +27,16 @@ export interface PersonalRule {
   isActive: boolean;
 }
 
-export type ViewerConfig = {
-  type: 'none';
-} | {
-  type: 'web';
-  url: string;
-} | {
-  type: 'file';
-  file: KnowledgeFile;
-} | {
-  type: 'law';
-  target: string;
-  lawId: string;
-  article?: string;
-};
+export type ViewerConfig =
+  | { type: 'none' }
+  | { type: 'web'; url: string }
+  | { type: 'file'; file: KnowledgeFile }
+  | {
+      type: 'law';
+      target: string;
+      lawId: string;
+      article?: string;
+    };
 
 export interface ChatMessage {
   id: string;
@@ -51,8 +47,8 @@ export interface ChatMessage {
   urlContext?: UrlContextMetadataItem[];
   groundingChunks?: GroundingChunk[];
   wasSearchEnabled?: boolean;
-  suggestedRules?: string[]; // AI가 제안한 새로운 원칙들
-  sessionId: string; // Changed from groupId
+  suggestedRules?: string[];
+  sessionId: string;
   groupId: string;
   uid: string;
 }
@@ -61,7 +57,7 @@ export interface ChatSession {
   id: string;
   title: string;
   createdAt: Date;
-  groupId: string; // The Project/Folder it belongs to
+  groupId: string;
   uid: string;
   isArchived: boolean;
 }
@@ -70,10 +66,17 @@ export interface KnowledgeFile {
   id: string;
   name: string;
   mimeType: string;
-  base64Data?: string; // The full data URI: "data:mime/type;base64,..."
-  content?: string; // Text content if it's text-based like markdown or json
-  type?: string; 
+  /**
+   * Transitional field used by the existing UI.
+   * New uploads contain a storage:// reference, not Base64.
+   * data: URIs remain supported only for legacy imports.
+   */
+  base64Data?: string;
+  storageReference?: string;
+  content?: string;
+  type?: string;
   url?: string;
+  size?: number;
   createdAt?: string;
 }
 
@@ -87,7 +90,7 @@ export interface BuildingOverview {
   projectName?: string;
   location?: string;
   landCategory?: string;
-  landArea?: string; // Using string to support "29,482.00m² (8,918.31평)"
+  landArea?: string;
   mainUsage?: string;
   scale?: string;
   buildingHeight?: string;
@@ -135,9 +138,9 @@ export interface URLGroup {
   parentId: string | null;
   projectAddress?: string;
   projectAddresses?: string[];
-  lotArea?: string; // Supporting string for flexibility (e.g., "120m²")
+  lotArea?: string;
   siteInvestigation?: string;
-  isProject?: boolean; // New flag
+  isProject?: boolean;
   uid?: string;
   createdAt?: number;
   buildingOverview?: BuildingOverview;
