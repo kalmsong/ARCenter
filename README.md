@@ -6,7 +6,7 @@
 
 - **React + Vite**: workspace UI
 - **Express**: authenticated Gemini and Airtect gateway
-- **Supabase Auth**: Google sign-in
+- **Supabase Auth**: passwordless email magic-link sign-in
 - **Supabase Postgres**: projects, folders, sessions, messages
 - **Supabase Storage**: private source documents
 - **Row Level Security (RLS)**: user data isolation
@@ -18,8 +18,10 @@ Uploaded files are no longer converted to Base64 or stored inside database rows.
 1. Create a Supabase project.
 2. Open the SQL Editor.
 3. Run [`supabase/migrations/001_initial.sql`](supabase/migrations/001_initial.sql).
-4. Enable the Google provider under **Authentication → Providers**.
-5. Add the local and production URLs under **Authentication → URL Configuration**.
+4. Keep the Email provider enabled under **Authentication → Providers**.
+5. Add local and production URLs under **Authentication → URL Configuration**.
+
+No Google Cloud OAuth project is required. Users enter an email address and receive a one-time sign-in link from Supabase.
 
 The SQL migration creates:
 
@@ -47,14 +49,27 @@ Server-only:
 
 ```bash
 SUPABASE_URL=
-SUPABASE_SERVICE_ROLE_KEY=
+SUPABASE_SECRET_KEY=
+# Legacy fallback is also supported:
+# SUPABASE_SERVICE_ROLE_KEY=
 GEMINI_API_KEY=
 AIRTECT_API_BASE_URL=https://api.airtect.kr
 ```
 
-Never expose `SUPABASE_SERVICE_ROLE_KEY` or `GEMINI_API_KEY` through Vite variables or client code.
+Never expose `SUPABASE_SECRET_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, or `GEMINI_API_KEY` through Vite variables or client code.
 
-## 3. Run locally
+## 3. Authentication URL setup
+
+For local development:
+
+```text
+Site URL: http://localhost:3000
+Redirect URL: http://localhost:3000/**
+```
+
+Before production deployment, change the Site URL to the public HTTPS domain and add that domain as an allowed Redirect URL. The login form passes the current browser origin to Supabase as the email redirect destination.
+
+## 4. Run locally
 
 ```bash
 npm install
@@ -63,7 +78,7 @@ npm run dev
 
 The app is served from `http://localhost:3000`.
 
-## 4. Production
+## 5. Production
 
 ```bash
 npm run build
@@ -82,7 +97,7 @@ Configure the same environment variables in NCP. Place HTTPS in front of the Exp
 - JSON request bodies are limited to 2 MB.
 - AI file hydration is limited to 5 files, 10 MB per file, and 20 MB total.
 - Storage paths are checked against the authenticated user ID before server download.
-- Gemini and Supabase service-role keys stay server-side.
+- Gemini and Supabase secret keys stay server-side.
 
 ## Migration note
 
