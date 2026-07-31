@@ -106,7 +106,7 @@ function userRateLimit(windowMs: number, limit: number) {
     limit,
     standardHeaders: 'draft-8',
     legacyHeaders: false,
-    keyGenerator: (req) => req.authUser?.id || req.ip || 'unknown',
+    keyGenerator: (req) => req.authUser?.id || 'authenticated',
     message: {
       error: '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.',
     },
