@@ -62,6 +62,22 @@ create table if not exists public.chat_messages (
 create index if not exists chat_messages_session_timestamp_idx
   on public.chat_messages(session_id, timestamp);
 
+-- Keep automatic table exposure disabled at project creation.
+-- Expose only the authenticated ARCenter tables required by supabase-js.
+grant usage on schema public to authenticated;
+revoke all on table public.profiles from anon;
+revoke all on table public.groups from anon;
+revoke all on table public.chat_sessions from anon;
+revoke all on table public.chat_messages from anon;
+grant select, insert, update, delete on table public.profiles to authenticated;
+grant select, insert, update, delete on table public.groups to authenticated;
+grant select, insert, update, delete on table public.chat_sessions to authenticated;
+grant select, insert, update, delete on table public.chat_messages to authenticated;
+grant all privileges on table public.profiles to service_role;
+grant all privileges on table public.groups to service_role;
+grant all privileges on table public.chat_sessions to service_role;
+grant all privileges on table public.chat_messages to service_role;
+
 alter table public.profiles enable row level security;
 alter table public.groups enable row level security;
 alter table public.chat_sessions enable row level security;
