@@ -11,7 +11,7 @@ import {
   generateContent,
   getInitialSuggestions,
   selectRelevantDocuments,
-} from './services/geminiServer';
+} from './services/openaiServer';
 import { supabaseAdmin } from './services/supabaseServer';
 import { hydrateKnowledgeFiles } from './services/knowledgeFileServer';
 
@@ -120,11 +120,68 @@ async function proxyAirtect(
       res.json(payload);
     }
   } catch (error) {
-    const status = error instanceof Error && error.name === 'AbortError' ? 504 : 502;
+    const status =
+      error instanceof Error && error.name === 'AbortError' ? 504 : 502;
     res.status(status).json({ error: safeJsonError(error) });
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function registerAiRoutes(app: express.Express, prefix: string) {
+  app.post(`${prefix}/generate`, async (req, res) => {
+    try {
+      const files = await hydrateKnowledgeFiles(
+        req.body.files || [],
+        req.authUser!.id,
+      );
+      res.json(await generateContent({ ...req.body, files }));
+    } catch (error) {
+      console.error('OpenAI generation failed:', error);
+      res.status(500).json({ error: safeJsonError(error) });
+    }
+  });
+
+  app.post(`${prefix}/select-documents`, async (req, res) => {
+    try {
+      const selectedIds = await selectRelevantDocuments(req.body);
+      res.json({ selected_ids: selectedIds });
+    } catch (error) {
+      console.error('OpenAI document selection failed:', error);
+      res.status(500).json({ error: safeJsonError(error) });
+    }
+  });
+
+  const suggestionsHandler = async (req: Request, res: Response) => {
+    try {
+      res.json(await getInitialSuggestions(req.body));
+    } catch (error) {
+      console.error('OpenAI suggestion generation failed:', error);
+      res.status(500).json({ error: safeJsonError(error) });
+    }
+  };
+
+  app.post(`${prefix}/suggestions`, suggestionsHandler);
+  app.post(`${prefix}/initial-suggestions`, suggestionsHandler);
+
+  app.post(`${prefix}/extract-principles`, async (req, res) => {
+    try {
+      const principles = await extractPrinciples(req.body);
+      res.json({ principles });
+    } catch (error) {
+      console.error('OpenAI principle extraction failed:', error);
+      res.status(500).json({ error: safeJsonError(error) });
+    }
+  });
+
+  app.post(`${prefix}/analyze-address`, async (req, res) => {
+    try {
+      res.json(await analyzeProjectAddress(req.body));
+    } catch (error) {
+      console.error('OpenAI address analysis failed:', error);
+      res.status(500).json({ error: safeJsonError(error) });
+    }
+  });
 }
 
 async function startServer() {
@@ -141,59 +198,20 @@ async function startServer() {
   );
   app.use(express.json({ limit: '2mb' }));
 
-  const geminiLimiter = createUserRateLimit(20);
-  const airtectLimiter = createUserRateLimit(60);
+  app.get('/api/health', (_req, res) => {
+    res.json({ status: 'ok' });
+  });
 
-  app.use('/api/gemini', authenticate, geminiLimiter);
+  const aiLimiter = createUserRateLimit(20);
+  const airtectLimiter = createUserRateLimit(60);
+  const aiPrefixes = ['/api/ai', '/api/gemini'];
+
+  app.use(aiPrefixes, authenticate, aiLimiter);
   app.use('/api/airtect', authenticate, airtectLimiter);
 
-  app.post('/api/gemini/generate', async (req, res) => {
-    try {
-      const files = await hydrateKnowledgeFiles(req.body.files, req.authUser!.id);
-      const response = await generateContent({ ...req.body, files });
-      res.json(response);
-    } catch (error) {
-      console.error('Gemini generation failed:', error);
-      res.status(500).json({ error: safeJsonError(error) });
-    }
-  });
-
-  app.post('/api/gemini/select-documents', async (req, res) => {
-    try {
-      const response = await selectRelevantDocuments(req.body);
-      res.json(response);
-    } catch (error) {
-      console.error('Gemini document selection failed:', error);
-      res.status(500).json({ error: safeJsonError(error) });
-    }
-  });
-
-  app.post('/api/gemini/initial-suggestions', async (req, res) => {
-    try {
-      res.json(await getInitialSuggestions(req.body));
-    } catch (error) {
-      console.error('Gemini suggestion generation failed:', error);
-      res.status(500).json({ error: safeJsonError(error) });
-    }
-  });
-
-  app.post('/api/gemini/extract-principles', async (req, res) => {
-    try {
-      res.json(await extractPrinciples(req.body));
-    } catch (error) {
-      console.error('Gemini principle extraction failed:', error);
-      res.status(500).json({ error: safeJsonError(error) });
-    }
-  });
-
-  app.post('/api/gemini/analyze-address', async (req, res) => {
-    try {
-      res.json(await analyzeProjectAddress(req.body));
-    } catch (error) {
-      console.error('Gemini address analysis failed:', error);
-      res.status(500).json({ error: safeJsonError(error) });
-    }
-  });
+  for (const prefix of aiPrefixes) {
+    registerAiRoutes(app, prefix);
+  }
 
   app.get('/api/airtect/land-eum', async (req, res) => {
     const query = new URLSearchParams();
@@ -218,8 +236,18 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(process.cwd(), 'dist');
-    app.use(express.static(distPath, { index: false }));
+    const assetsPath = path.join(distPath, 'assets');
+
+    app.use(
+      '/assets',
+      express.static(assetsPath, {
+        maxAge: '1y',
+        immutable: true,
+      }),
+    );
+    app.use(express.static(distPath, { index: false, maxAge: '1h' }));
     app.get('/{*splat}', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-cache');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
