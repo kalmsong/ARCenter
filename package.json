@@ -10,9 +10,7 @@
     "start": "node dist/server.cjs"
   },
   "dependencies": {
-    "@google/genai": "^1.0.1",
     "@supabase/supabase-js": "^2.0.0",
-    "@vis.gl/react-google-maps": "^1.8.3",
     "dotenv": "^17.2.1",
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.1",
@@ -21,6 +19,7 @@
     "lucide-react": "^0.417.0",
     "marked": "^13.0.2",
     "motion": "^12.40.0",
+    "openai": "^6.48.0",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
     "react-markdown": "^10.1.0",
@@ -28,7 +27,6 @@
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
-    "@types/google.maps": "^3.65.1",
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
     "esbuild": "^0.28.1",
