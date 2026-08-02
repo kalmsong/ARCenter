@@ -96,10 +96,10 @@ const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
             renderMessageContent()
           )}
           
-          {isModel && message.wasSearchEnabled && message.groundingChunks && message.groundingChunks.length > 0 && (
+          {isModel && message.groundingChunks && message.groundingChunks.length > 0 && (
             <div className="mt-3 pt-3 border-t border-gray-200">
               <h4 className="text-xs font-semibold text-gray-500 mb-1.5">
-                웹 소스:
+                {message.wasSearchEnabled ? '웹 소스:' : '근거 원문:'}
               </h4>
               <ul className="space-y-1">
                 {message.groundingChunks.filter(c => c.web).map((chunk, index) => (
