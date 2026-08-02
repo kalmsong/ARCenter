@@ -5,6 +5,7 @@ import {
   PersonalRule,
   UrlContextMetadataItem,
 } from '../types';
+import { buildAirtectEvidence } from './airtectEvidenceServer';
 
 const MODEL_NAME = process.env.OPENAI_MODEL || 'gpt-5-mini';
 const TEST_MODE = process.env.ARCENTER_TEST_MODE !== 'false';
@@ -145,7 +146,7 @@ function buildFileContent(files: KnowledgeFile[]): any[] {
   return content;
 }
 
-function extractGroundingChunks(response: any): GroundingChunk[] | undefined {
+function extractGroundingChunks(response: any): GroundingChunk[] {
   const chunks: GroundingChunk[] = [];
   const seen = new Set<string>();
 
@@ -173,7 +174,25 @@ function extractGroundingChunks(response: any): GroundingChunk[] | undefined {
     }
   }
 
-  return chunks.length > 0 ? chunks : undefined;
+  return chunks;
+}
+
+function mergeGroundingChunks(
+  ...groups: Array<GroundingChunk[] | undefined>
+): GroundingChunk[] | undefined {
+  const seen = new Set<string>();
+  const merged: GroundingChunk[] = [];
+
+  for (const group of groups) {
+    for (const item of group || []) {
+      const uri = item.web?.uri;
+      if (!uri || seen.has(uri)) continue;
+      seen.add(uri);
+      merged.push(item);
+    }
+  }
+
+  return merged.length > 0 ? merged : undefined;
 }
 
 function prioritizeUrls(prompt: string, urls: string[]): string[] {
@@ -282,34 +301,59 @@ export async function generateContent({
     .map((rule) => rule.text)
     .join('\n');
 
+  const urlsForContext = prioritizeUrls(prompt, urls);
+  const apiEvidence = useSearch
+    ? {
+        context: '',
+        sources: [] as GroundingChunk[],
+        successCount: 0,
+        attemptedCount: 0,
+        errors: [] as string[],
+      }
+    : await buildAirtectEvidence({
+        prompt,
+        urls: urlsForContext,
+        activeGroupAddress,
+      });
+
+  const hasApiEvidence = apiEvidence.successCount > 0;
+  const shouldUseFallbackWeb =
+    !useSearch &&
+    !hasApiEvidence &&
+    urlsForContext.length > 0 &&
+    apiEvidence.attemptedCount > 0;
+
   const instructions = `당신은 대한민국 건축가를 위한 건축 법규 검토 AI 어시스턴트입니다.
 
 답변 원칙:
 1. 모든 답변은 한국어로 작성합니다.
-2. 건축법, 국토계획법, 관련 시행령·규칙·지자체 조례를 함께 검토합니다.
-3. 법령명과 조문을 자연스럽게 밝혀 근거를 명확히 합니다.
-4. 확실하지 않은 내용은 추측하지 않고 추가 확인이 필요하다고 밝힙니다.
-5. 제공된 문서와 URL을 우선 사용하고, 웹 검색이 허용된 경우 최신 공식 출처를 확인합니다.
-6. 웹 검색 모드에서는 웹 검색 도구를 사용해 최신 공개 정보를 확인하고 출처에 근거해 답변합니다.
-7. 지역 조례나 지구단위계획이 필요한 질문에는 대상지 정보가 추가로 필요하다고 명확히 안내합니다.
-8. 검색 과정이나 내부 처리 과정은 설명하지 않고 최종 검토 결과만 제시합니다.
-${TEST_MODE ? `\n현재는 테스트 운영 중이며 한 질문당 최대 ${MAX_CONTEXT_URLS}개 URL과 ${MAX_CONTEXT_FILES}개 파일만 확인합니다.` : ''}
+2. 외부 FastAPI의 구조화된 법령·토지 데이터가 제공되면 이를 가장 우선하는 근거로 사용합니다.
+3. API 데이터에 없는 수치·조문·판단은 추측하지 않고 '추가 확인 필요'라고 표시합니다.
+4. 법령명, 조문, 적용 조건과 예외를 구분해 설명합니다.
+5. 답변은 '검토 결과 → 근거 → 추가 확인사항' 순서로 간결하게 구성합니다.
+6. 지역 조례나 지구단위계획이 필요한 질문에는 대상지 정보가 추가로 필요하다고 명확히 안내합니다.
+7. 원문 HTML 링크는 채팅 아래의 '근거 원문' 영역에 별도로 제공되므로, 본문에는 법령명과 조문을 명확히 적습니다.
+8. 웹 검색 모드이거나 API 호출이 실패해 공식 원문 확인이 필요한 경우에만 웹 검색 결과를 보조 근거로 사용합니다.
+9. 검색 과정이나 내부 처리 과정은 설명하지 않고 최종 검토 결과만 제시합니다.
+${TEST_MODE ? `\n현재는 제한 운영 중이며 한 질문당 최대 ${MAX_CONTEXT_URLS}개 법령 URL과 ${MAX_CONTEXT_FILES}개 파일을 처리합니다.` : ''}
 ${activeRules ? `\n사용자의 개인 작업 원칙:\n${activeRules}` : ''}
 ${folderContext ? `\n현재 프로젝트/폴더: ${folderContext}` : ''}
 ${activeGroupAddress ? `\n대상지 주소: ${activeGroupAddress}` : ''}`;
 
-  const urlsForContext = prioritizeUrls(prompt, urls);
-  const urlContext = urlsForContext.length
-    ? `\n\n우선 검토할 공식 URL:\n${urlsForContext.join('\n')}`
-    : '';
+  const officialUrlFallback =
+    shouldUseFallbackWeb && urlsForContext.length > 0
+      ? `\n\nFastAPI가 현재 응답하지 않아 다음 공식 원문 URL을 웹에서 확인해 보완하세요:\n${urlsForContext.join('\n')}`
+      : '';
   const searchInstruction = useSearch
-    ? '\n\n이 질문은 웹 검색 모드입니다. 최신 공개 정보를 웹에서 확인한 뒤, 확인한 출처를 근거로 답변하세요.'
-    : '';
+    ? '\n\n이 질문은 웹 검색 모드입니다. 최신 공개 정보를 웹에서 확인한 뒤 출처에 근거해 답변하세요.'
+    : shouldUseFallbackWeb
+      ? '\n\nFastAPI 근거를 가져오지 못했습니다. 제공된 법제처 공식 원문을 우선 확인하고, 확인하지 못한 내용은 단정하지 마세요.'
+      : '';
 
   const inputContent: any[] = [
     {
       type: 'input_text',
-      text: `${prompt}${urlContext}${searchInstruction}`,
+      text: `${prompt}${apiEvidence.context}${officialUrlFallback}${searchInstruction}`,
     },
     ...buildFileContent(files),
   ];
@@ -329,7 +373,7 @@ ${activeGroupAddress ? `\n대상지 주소: ${activeGroupAddress}` : ''}`;
     store: false,
   };
 
-  if (useSearch || urlsForContext.length > 0) {
+  if (useSearch || shouldUseFallbackWeb) {
     request.tools = [
       {
         type: 'web_search',
@@ -348,7 +392,10 @@ ${activeGroupAddress ? `\n대상지 주소: ${activeGroupAddress}` : ''}`;
 
   return {
     text,
-    groundingChunks: extractGroundingChunks(response),
+    groundingChunks: mergeGroundingChunks(
+      apiEvidence.sources,
+      extractGroundingChunks(response),
+    ),
   };
 }
 
