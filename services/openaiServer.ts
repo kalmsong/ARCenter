@@ -24,6 +24,55 @@ function getOpenAI(): OpenAI {
 
 type StructuredSchema = Record<string, unknown>;
 
+function extractResponseText(response: any): string {
+  const sdkText = response.output_text?.trim();
+  if (sdkText) return sdkText;
+
+  const parts: string[] = [];
+  for (const item of response.output || []) {
+    if (item.type !== 'message') continue;
+    for (const content of item.content || []) {
+      if (content.type === 'output_text' && typeof content.text === 'string') {
+        parts.push(content.text);
+      }
+      if (content.type === 'refusal' && typeof content.refusal === 'string') {
+        parts.push(content.refusal);
+      }
+    }
+  }
+
+  return parts.join('\n').trim();
+}
+
+function createEmptyResponseError(response: any, label: string): Error {
+  const status = response.status || 'unknown';
+  const incompleteReason = response.incomplete_details?.reason;
+  const outputTypes = (response.output || []).map((item: any) => item.type);
+
+  console.error(`${label} returned no text`, {
+    responseId: response.id,
+    status,
+    incompleteReason,
+    outputTypes,
+    usage: response.usage,
+    error: response.error,
+  });
+
+  if (response.error?.message) {
+    return new Error(`OpenAI 오류: ${response.error.message}`);
+  }
+
+  if (status === 'incomplete' && incompleteReason === 'max_output_tokens') {
+    return new Error(
+      'AI가 답변을 마치기 전에 출력 한도에 도달했습니다. 질문 범위를 조금 줄여 다시 시도해 주세요.',
+    );
+  }
+
+  return new Error(
+    'AI가 답변 내용을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+  );
+}
+
 async function createStructuredResponse<T>(options: {
   name: string;
   schema: StructuredSchema;
@@ -35,9 +84,11 @@ async function createStructuredResponse<T>(options: {
     model: MODEL_NAME,
     instructions: options.instructions,
     input: options.input,
-    max_output_tokens: options.maxOutputTokens || 1_200,
+    max_output_tokens: options.maxOutputTokens || 2_000,
+    reasoning: { effort: 'low' },
     store: false,
     text: {
+      verbosity: 'low',
       format: {
         type: 'json_schema',
         name: options.name,
@@ -47,9 +98,9 @@ async function createStructuredResponse<T>(options: {
     },
   } as any);
 
-  const text = response.output_text?.trim();
+  const text = extractResponseText(response);
   if (!text) {
-    throw new Error('OpenAI returned an empty structured response.');
+    throw createEmptyResponseError(response, options.name);
   }
 
   return JSON.parse(text) as T;
@@ -186,7 +237,7 @@ export async function generateContent({
 3. 법령명과 조문을 자연스럽게 밝혀 근거를 명확히 합니다.
 4. 확실하지 않은 내용은 추측하지 않고 추가 확인이 필요하다고 밝힙니다.
 5. 제공된 문서와 URL을 우선 사용하고, 웹 검색이 허용된 경우 최신 공식 출처를 확인합니다.
-6. 웹 검색 모드에서는 실제 웹 검색을 수행하고 확인한 출처에 근거해 답변합니다.
+6. 웹 검색 모드에서는 웹 검색 도구를 사용해 최신 공개 정보를 확인하고 출처에 근거해 답변합니다.
 7. 검색 과정이나 내부 처리 과정은 설명하지 않고 최종 검토 결과만 제시합니다.
 ${activeRules ? `\n사용자의 개인 작업 원칙:\n${activeRules}` : ''}
 ${folderContext ? `\n현재 프로젝트/폴더: ${folderContext}` : ''}
@@ -196,11 +247,14 @@ ${activeGroupAddress ? `\n대상지 주소: ${activeGroupAddress}` : ''}`;
   const urlContext = urlsForContext.length
     ? `\n\n우선 검토할 URL:\n${urlsForContext.join('\n')}`
     : '';
+  const searchInstruction = useSearch
+    ? '\n\n이 질문은 웹 검색 모드입니다. 최신 공개 정보를 웹에서 확인한 뒤, 확인한 출처를 근거로 답변하세요.'
+    : '';
 
   const inputContent: any[] = [
     {
       type: 'input_text',
-      text: `${prompt}${urlContext}`,
+      text: `${prompt}${urlContext}${searchInstruction}`,
     },
     ...buildFileContent(files),
   ];
@@ -214,19 +268,13 @@ ${activeGroupAddress ? `\n대상지 주소: ${activeGroupAddress}` : ''}`;
         content: inputContent,
       },
     ],
-    max_output_tokens: 6_000,
+    max_output_tokens: 8_000,
+    reasoning: { effort: 'low' },
+    text: { verbosity: 'medium' },
     store: false,
   };
 
-  if (useSearch) {
-    request.tools = [
-      {
-        type: 'web_search',
-        search_context_size: 'medium',
-      },
-    ];
-    request.tool_choice = 'required';
-  } else if (urlsForContext.length > 0) {
+  if (useSearch || urlsForContext.length > 0) {
     request.tools = [
       {
         type: 'web_search',
@@ -237,10 +285,10 @@ ${activeGroupAddress ? `\n대상지 주소: ${activeGroupAddress}` : ''}`;
   }
 
   const response = await getOpenAI().responses.create(request);
-  const text = response.output_text?.trim();
+  const text = extractResponseText(response);
 
   if (!text) {
-    throw new Error('OpenAI returned an empty response.');
+    throw createEmptyResponseError(response, 'generateContent');
   }
 
   return {
