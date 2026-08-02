@@ -1,4 +1,8 @@
 import { GroundingChunk } from '../types';
+import {
+  buildPlanningIssueContext,
+  PlanningLawReference,
+} from './planningIssueRouter';
 
 const AIRTECT_API_BASE_URL =
   process.env.AIRTECT_API_BASE_URL || 'https://api.airtect.kr';
@@ -9,9 +13,7 @@ const REQUEST_TIMEOUT_MS = Number(
 const MAX_LAW_REQUESTS = TEST_MODE ? 4 : 10;
 const MAX_TOTAL_CONTEXT_CHARS = TEST_MODE ? 32_000 : 96_000;
 
-type LawReference = {
-  target: 'law' | 'ordin';
-  lawId: string;
+type LawReference = PlanningLawReference & {
   officialUrl: string;
 };
 
@@ -28,7 +30,14 @@ export type AirtectEvidenceResult = {
   successCount: number;
   attemptedCount: number;
   errors: string[];
+  planningIssue?: string;
 };
+
+function officialUrlFor(reference: PlanningLawReference): string {
+  return reference.target === 'ordin'
+    ? `https://www.law.go.kr/ordinInfoP.do?ordinId=${encodeURIComponent(reference.lawId)}`
+    : `https://www.law.go.kr/LSW/lsInfoP.do?lsId=${encodeURIComponent(reference.lawId)}`;
+}
 
 function parseLawReference(rawUrl: string): LawReference | null {
   try {
@@ -39,24 +48,23 @@ function parseLawReference(rawUrl: string): LawReference | null {
       const lawId = params.get('law_id');
       if (!lawId) return null;
 
-      return {
+      const reference: PlanningLawReference = {
         target,
         lawId,
-        officialUrl:
-          target === 'ordin'
-            ? `https://www.law.go.kr/ordinInfoP.do?ordinId=${encodeURIComponent(lawId)}`
-            : `https://www.law.go.kr/LSW/lsInfoP.do?lsId=${encodeURIComponent(lawId)}`,
+        title: target === 'ordin' ? `자치법규 ${lawId}` : `법령 ${lawId}`,
       };
+      return { ...reference, officialUrl: officialUrlFor(reference) };
     }
 
     const url = new URL(rawUrl);
     const ordinanceId = url.searchParams.get('ordinId');
     if (ordinanceId) {
-      return {
+      const reference: PlanningLawReference = {
         target: 'ordin',
         lawId: ordinanceId,
-        officialUrl: `https://www.law.go.kr/ordinInfoP.do?ordinId=${encodeURIComponent(ordinanceId)}`,
+        title: `자치법규 ${ordinanceId}`,
       };
+      return { ...reference, officialUrl: officialUrlFor(reference) };
     }
 
     const lawId =
@@ -65,11 +73,12 @@ function parseLawReference(rawUrl: string): LawReference | null {
       url.searchParams.get('lawId');
     if (!lawId) return null;
 
-    return {
+    const reference: PlanningLawReference = {
       target: 'law',
       lawId,
-      officialUrl: `https://www.law.go.kr/LSW/lsInfoP.do?lsId=${encodeURIComponent(lawId)}`,
+      title: `법령 ${lawId}`,
     };
+    return { ...reference, officialUrl: officialUrlFor(reference) };
   } catch {
     return null;
   }
@@ -82,7 +91,7 @@ function extractArticle(prompt: string): string | undefined {
 }
 
 function shouldFetchLandInfo(prompt: string): boolean {
-  return /(대지|토지|필지|주소|용도지역|용도지구|용도구역|건폐율|용적률|지목|면적|토지이음)/.test(
+  return /(대지|토지|필지|주소|용도지역|용도지구|용도구역|건폐율|용적률|지목|면적|토지이음|배치|개발가능)/.test(
     prompt,
   );
 }
@@ -163,6 +172,31 @@ function extractTitle(payload: unknown, fallback: string): string {
   return fallback;
 }
 
+function extractProjectValue(
+  projectContext: Record<string, unknown> | undefined,
+  keys: string[],
+): string | undefined {
+  if (!projectContext) return undefined;
+
+  const queue: unknown[] = [projectContext];
+  let inspected = 0;
+  while (queue.length > 0 && inspected < 80) {
+    const current = queue.shift();
+    inspected += 1;
+    if (!current || typeof current !== 'object') continue;
+
+    const record = current as Record<string, unknown>;
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+    for (const value of Object.values(record)) {
+      if (value && typeof value === 'object') queue.push(value);
+    }
+  }
+  return undefined;
+}
+
 async function fetchAirtectJson(endpoint: string): Promise<unknown> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -232,15 +266,27 @@ export async function buildAirtectEvidence(options: {
   prompt: string;
   urls: string[];
   activeGroupAddress?: string;
+  projectContext?: Record<string, unknown>;
 }): Promise<AirtectEvidenceResult> {
   const article = extractArticle(options.prompt);
   const errors: string[] = [];
   const evidence: EvidenceItem[] = [];
   const sources: GroundingChunk[] = [];
+  const planningIssue = buildPlanningIssueContext(
+    options.prompt,
+    options.projectContext,
+  );
 
-  const lawReferences = options.urls
+  const issueReferences: LawReference[] = planningIssue.laws.map((reference) => ({
+    ...reference,
+    officialUrl: officialUrlFor(reference),
+  }));
+  const registeredReferences = options.urls
     .map(parseLawReference)
-    .filter((item): item is LawReference => Boolean(item))
+    .filter((item): item is LawReference => Boolean(item));
+
+  // 문제 유형에 필요한 법령을 먼저 배치하고, 사용자가 등록한 HTML은 추가 근거로 합칩니다.
+  const lawReferences = [...issueReferences, ...registeredReferences]
     .filter(
       (item, index, all) =>
         all.findIndex(
@@ -260,11 +306,7 @@ export async function buildAirtectEvidence(options: {
 
     try {
       const payload = await fetchAirtectJson(endpoint);
-      const fallbackTitle =
-        reference.target === 'ordin'
-          ? `자치법규 ${reference.lawId}`
-          : `법령 ${reference.lawId}`;
-      const title = extractTitle(payload, fallbackTitle);
+      const title = extractTitle(payload, reference.title);
 
       evidence.push({
         label: article ? `${title} 제${article.replace('-', '조의')} 관련 조문` : title,
@@ -287,10 +329,12 @@ export async function buildAirtectEvidence(options: {
     }
   });
 
-  const address = options.activeGroupAddress
-    ?.split('\n')
-    .map((item) => item.trim())
-    .find(Boolean);
+  const address =
+    options.activeGroupAddress
+      ?.split('\n')
+      .map((item) => item.trim())
+      .find(Boolean) ||
+    extractProjectValue(options.projectContext, ['project_address', 'location']);
 
   if (address) {
     tasks.push(
@@ -315,6 +359,38 @@ export async function buildAirtectEvidence(options: {
         }
       })(),
     );
+
+    if (planningIssue.profile) {
+      tasks.push(
+        (async () => {
+          const params = new URLSearchParams({
+            address,
+            address_type: 'road',
+          });
+          const purpose = extractProjectValue(options.projectContext, [
+            'mainUsage',
+            'main_usage',
+            'purpose',
+          ]);
+          if (purpose) params.set('purpose', purpose);
+          const endpoint = `/overview?${params.toString()}`;
+          try {
+            const payload = await fetchAirtectJson(endpoint);
+            evidence.push({
+              label: '대상지 계획 개요 API',
+              endpoint,
+              payload,
+            });
+          } catch (error) {
+            errors.push(
+              `overview - ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+        })(),
+      );
+    }
 
     if (shouldFetchLandInfo(options.prompt)) {
       tasks.push(
@@ -353,19 +429,17 @@ export async function buildAirtectEvidence(options: {
     sources.push({
       web: {
         uri: reference.officialUrl,
-        title:
-          reference.target === 'ordin'
-            ? `법제처 자치법규 원문 · ${reference.lawId}`
-            : `법제처 법령 원문 · ${reference.lawId}`,
+        title: `법제처 원문 · ${reference.title}`,
       },
     });
   }
 
   return {
-    context: buildContext(evidence),
+    context: `${planningIssue.context}${buildContext(evidence)}`,
     sources: deduplicateSources(sources),
     successCount: evidence.length,
     attemptedCount: tasks.length,
     errors,
+    planningIssue: planningIssue.profile?.title,
   };
 }
