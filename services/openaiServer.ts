@@ -186,7 +186,8 @@ export async function generateContent({
 3. 법령명과 조문을 자연스럽게 밝혀 근거를 명확히 합니다.
 4. 확실하지 않은 내용은 추측하지 않고 추가 확인이 필요하다고 밝힙니다.
 5. 제공된 문서와 URL을 우선 사용하고, 웹 검색이 허용된 경우 최신 공식 출처를 확인합니다.
-6. 검색 과정이나 내부 처리 과정은 설명하지 않고 최종 검토 결과만 제시합니다.
+6. 웹 검색 모드에서는 실제 웹 검색을 수행하고 확인한 출처에 근거해 답변합니다.
+7. 검색 과정이나 내부 처리 과정은 설명하지 않고 최종 검토 결과만 제시합니다.
 ${activeRules ? `\n사용자의 개인 작업 원칙:\n${activeRules}` : ''}
 ${folderContext ? `\n현재 프로젝트/폴더: ${folderContext}` : ''}
 ${activeGroupAddress ? `\n대상지 주소: ${activeGroupAddress}` : ''}`;
@@ -217,13 +218,22 @@ ${activeGroupAddress ? `\n대상지 주소: ${activeGroupAddress}` : ''}`;
     store: false,
   };
 
-  if (useSearch || urlsForContext.length > 0) {
+  if (useSearch) {
     request.tools = [
       {
         type: 'web_search',
         search_context_size: 'medium',
       },
     ];
+    request.tool_choice = 'required';
+  } else if (urlsForContext.length > 0) {
+    request.tools = [
+      {
+        type: 'web_search',
+        search_context_size: 'medium',
+      },
+    ];
+    request.tool_choice = 'auto';
   }
 
   const response = await getOpenAI().responses.create(request);
