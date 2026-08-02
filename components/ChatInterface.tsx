@@ -9,6 +9,13 @@ import MessageItem from './MessageItem';
 import { Send, Menu, Globe, Lightbulb, Info, AlertTriangle, XCircle, X, MapPin, LogIn, LogOut, User as UserIcon, Sparkles } from 'lucide-react';
 import { User } from '../services/firebase';
 
+const EXAMPLE_PROJECT_SUGGESTIONS = [
+  '현재 계획한 승객용 6대와 서비스용 1대가 업무 상주 2,200명과 판매시설 피크 600명을 수용하기에 적절한지, 법정 최소와 운영 권장안을 나눠 검토해 주세요.',
+  '업무시설 32,000㎡와 판매시설 6,000㎡에 계획한 주차 360대가 충분한지, 법정 주차대수와 평면 조정안을 정리해 주세요.',
+  '지상 24층·높이 108m, 특별피난계단 2개와 코어 2개 계획에서 피난·비상용·피난용 승강기 구성을 검토해 주세요.',
+  '대지 8,200㎡, 건축면적 4,510㎡, 용적률 산정 연면적 38,700㎡ 계획에서 실제 개발규모를 제한할 추가 조건과 배치 대안을 찾아주세요.',
+];
+
 interface ToastProps {
   notification: ToastNotification;
   onClose: (id: string) => void;
@@ -160,7 +167,16 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   };
 
   const canShowSuggestionsArea = messages.filter(m => m.sender !== MessageSender.SYSTEM).length < 1;
-  const suggestionsToShow = initialQuerySuggestions || [];
+  const isExampleProject = Boolean(
+    activeGroupPath?.includes('예시 프로젝트') ||
+    activeGroupPath?.includes('빠른 체험 프로젝트'),
+  );
+  const suggestionsToShow =
+    initialQuerySuggestions && initialQuerySuggestions.length > 0
+      ? initialQuerySuggestions
+      : isExampleProject
+        ? EXAMPLE_PROJECT_SUGGESTIONS
+        : [];
   const hasSuggestionsToShow = suggestionsToShow.length > 0;
   const effectivePlaceholder = !hasSelectedContext
     ? '왼쪽에서 프로젝트 또는 자료실 폴더를 먼저 선택해 주세요.'
@@ -227,7 +243,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         <p className="text-xs leading-relaxed">
           <span className="font-bold">제한 운영 안내</span>
           <span className="mx-1">·</span>
-          GCP 서버 문제로 현재 NCP 임시 서버에서 제한 운영 중입니다. 빠른 체험 프로젝트는 핵심 법령 6종을 제공하며, 질문당 법령 URL 최대 4개와 첨부파일 최대 2개를 확인합니다. 주소 자동조회·법정 기준 계산 등 외부 FastAPI 연동 기능은 API 상태에 따라 지연되거나 실패할 수 있습니다.
+          GCP 서버 문제로 현재 NCP 임시 서버에서 제한 운영 중입니다. 예시 프로젝트는 등록된 국가법령·서울시 조례 가운데 질문과 관련된 자료를 선별하며, 질문당 법령 API 최대 4개와 첨부파일 최대 2개를 확인합니다. 주소 자동조회·법정 기준 계산 등 외부 FastAPI 연동 기능은 API 상태에 따라 지연되거나 실패할 수 있습니다.
         </p>
       </div>
 
@@ -294,13 +310,15 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
           {canShowSuggestionsArea && hasSuggestionsToShow && onSuggestedQueryClick && (
             <div className="my-4 px-1">
-              <p className="text-xs text-gray-500 mb-2 font-medium">다음 중 하나를 시도해 보세요:</p>
-              <div className="flex flex-wrap gap-2">
+              <p className="text-xs text-gray-500 mb-2 font-medium">
+                {isExampleProject ? '예시 계획을 바로 검토해 보세요:' : '다음 중 하나를 시도해 보세요:'}
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                 {suggestionsToShow.map((suggestion, index) => (
                   <button
                     key={index}
                     onClick={() => onSuggestedQueryClick(suggestion)}
-                    className="bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg text-sm hover:bg-blue-200/60 transition-colors shadow-sm"
+                    className="bg-blue-50 border border-blue-200 text-left text-blue-800 px-3 py-2.5 rounded-lg text-sm hover:bg-blue-100 transition-colors shadow-sm"
                   >
                     {suggestion}
                   </button>
