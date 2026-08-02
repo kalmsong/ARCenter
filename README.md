@@ -5,13 +5,16 @@
 ## Architecture
 
 - **React + Vite**: workspace UI
-- **Express**: authenticated Gemini and Airtect gateway
+- **Express**: authenticated OpenAI and Airtect gateway
+- **OpenAI Responses API**: legal review, document routing, structured outputs, optional web search
 - **Supabase Auth**: passwordless email magic-link sign-in
 - **Supabase Postgres**: projects, folders, sessions, messages
 - **Supabase Storage**: private source documents
 - **Row Level Security (RLS)**: user data isolation
 
-Uploaded files are no longer converted to Base64 or stored inside database rows. The browser uploads raw files to a private Storage bucket and stores only a `storage://` reference in project metadata.
+The login screen is loaded before the full workspace bundle. The main workspace is downloaded only after Supabase confirms an authenticated session.
+
+Uploaded files are no longer converted to Base64 or stored inside database rows. The browser uploads raw files to a private Storage bucket and stores only a `storage://` reference in project metadata. Selected files are downloaded by the authenticated server and sent to OpenAI only for the active request.
 
 ## 1. Supabase setup
 
@@ -35,14 +38,13 @@ The SQL migration creates:
 
 ## 2. Environment variables
 
-Copy `.env.example` and set the values in your development and deployment environments.
+Copy `.env.example` and set the values in development and deployment environments.
 
 Browser-safe:
 
 ```bash
 VITE_SUPABASE_URL=
 VITE_SUPABASE_ANON_KEY=
-GOOGLE_MAPS_PLATFORM_KEY=
 ```
 
 Server-only:
@@ -52,11 +54,14 @@ SUPABASE_URL=
 SUPABASE_SECRET_KEY=
 # Legacy fallback is also supported:
 # SUPABASE_SERVICE_ROLE_KEY=
-GEMINI_API_KEY=
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-5-mini
 AIRTECT_API_BASE_URL=https://api.airtect.kr
 ```
 
-Never expose `SUPABASE_SECRET_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, or `GEMINI_API_KEY` through Vite variables or client code.
+Never expose `SUPABASE_SECRET_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, or `OPENAI_API_KEY` through Vite variables or client code.
+
+Google Maps is not used by the current application and no Maps key is required.
 
 ## 3. Authentication URL setup
 
@@ -67,7 +72,14 @@ Site URL: http://localhost:3000
 Redirect URL: http://localhost:3000/**
 ```
 
-Before production deployment, change the Site URL to the public HTTPS domain and add that domain as an allowed Redirect URL. The login form passes the current browser origin to Supabase as the email redirect destination.
+For the current production deployment:
+
+```text
+Site URL: https://law.airtect.kr
+Redirect URL: https://law.airtect.kr/**
+```
+
+The login form passes the current browser origin to Supabase as the email redirect destination.
 
 ## 4. Run locally
 
@@ -87,18 +99,31 @@ NODE_ENV=production npm start
 
 Configure the same environment variables in NCP. Place HTTPS in front of the Express server and keep `ALLOW_INSECURE_AIRTECT=false`.
 
+## AI routes
+
+The browser uses authenticated `/api/ai/*` routes. `/api/gemini/*` remains as a temporary backwards-compatible alias for previously cached browser bundles.
+
+- `/api/ai/generate`
+- `/api/ai/select-documents`
+- `/api/ai/suggestions`
+- `/api/ai/extract-principles`
+- `/api/ai/analyze-address`
+
+The optional web-search toggle maps to the OpenAI Responses API `web_search` tool.
+
 ## Security controls
 
-- Every `/api/gemini/*` and `/api/airtect/*` request requires a valid Supabase access token.
-- Gemini requests are limited per authenticated user.
+- Every `/api/ai/*`, compatibility `/api/gemini/*`, and `/api/airtect/*` request requires a valid Supabase access token.
+- AI requests are limited per authenticated user.
 - Airtect requests are limited per authenticated user.
 - The old unrestricted wildcard proxy was removed.
 - Client authorization headers are never forwarded to Airtect.
 - JSON request bodies are limited to 2 MB.
 - AI file hydration is limited to 5 files, 10 MB per file, and 20 MB total.
 - Storage paths are checked against the authenticated user ID before server download.
-- Gemini and Supabase secret keys stay server-side.
+- OpenAI and Supabase secret keys stay server-side.
+- Responses API calls use `store: false`.
 
 ## Migration note
 
-This branch changes the persistence provider. Existing Firebase data is not copied automatically. Export or retain the Firebase project until groups, sessions, messages, and legacy Base64 files have been migrated and verified.
+This branch changes the persistence and AI providers. Existing Firebase data is not copied automatically. Export or retain the Firebase project until groups, sessions, messages, and legacy Base64 files have been migrated and verified.
