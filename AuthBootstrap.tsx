@@ -2,7 +2,7 @@ import React, { lazy, Suspense, useEffect, useState } from 'react';
 import LoginScreen from './components/LoginScreen';
 import { supabase } from './services/supabaseClient';
 
-const AuthenticatedApp = lazy(() => import('./App'));
+const AuthenticatedApp = lazy(() => import('./AuthenticatedApp'));
 
 type AuthState = 'loading' | 'signed-out' | 'signed-in';
 
