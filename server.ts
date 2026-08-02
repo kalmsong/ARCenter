@@ -89,11 +89,29 @@ function safeJsonError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function buildQuery(req: Request, defaults?: Record<string, string>): string {
+  const query = new URLSearchParams(defaults);
+
+  for (const [key, value] of Object.entries(req.query)) {
+    if (typeof value === 'string') {
+      query.set(key, value);
+    } else if (Array.isArray(value)) {
+      for (const item of value) {
+        if (typeof item === 'string') query.append(key, item);
+      }
+    }
+  }
+
+  const value = query.toString();
+  return value ? `?${value}` : '';
+}
+
 async function proxyAirtect(
   req: Request,
   res: Response,
   endpoint: string,
   init?: RequestInit,
+  accept = 'application/json',
 ) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -102,26 +120,45 @@ async function proxyAirtect(
     const upstream = await fetch(`${AIRTECT_API_BASE_URL}${endpoint}`, {
       ...init,
       headers: {
-        Accept: 'application/json',
+        Accept: accept,
         ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
       },
       signal: controller.signal,
     });
 
     const contentType = upstream.headers.get('content-type') || '';
-    const payload = contentType.includes('application/json')
-      ? await upstream.json()
-      : await upstream.text();
+    const contentDisposition = upstream.headers.get('content-disposition');
 
     res.status(upstream.status);
-    if (typeof payload === 'string') {
-      res.send(payload);
-    } else {
-      res.json(payload);
+    if (contentType) res.setHeader('Content-Type', contentType);
+    if (contentDisposition) {
+      res.setHeader('Content-Disposition', contentDisposition);
     }
+
+    if (contentType.includes('application/json')) {
+      res.json(await upstream.json());
+      return;
+    }
+
+    if (
+      contentType.startsWith('text/') ||
+      contentType.includes('application/xml') ||
+      contentType.includes('text/html')
+    ) {
+      res.send(await upstream.text());
+      return;
+    }
+
+    const arrayBuffer = await upstream.arrayBuffer();
+    res.send(Buffer.from(arrayBuffer));
   } catch (error) {
     const status =
       error instanceof Error && error.name === 'AbortError' ? 504 : 502;
+    console.error('Airtect proxy failed:', {
+      endpoint,
+      status,
+      error: safeJsonError(error),
+    });
     res.status(status).json({ error: safeJsonError(error) });
   } finally {
     clearTimeout(timeout);
@@ -184,6 +221,90 @@ function registerAiRoutes(app: express.Express, prefix: string) {
   });
 }
 
+function registerAirtectRoutes(app: express.Express) {
+  app.get('/api/airtect/health', async (req, res) => {
+    await proxyAirtect(req, res, '/health');
+  });
+
+  app.get('/api/airtect/land/info', async (req, res) => {
+    if (typeof req.query.address !== 'string' || !req.query.address.trim()) {
+      res.status(400).json({ error: 'Missing address.' });
+      return;
+    }
+
+    await proxyAirtect(
+      req,
+      res,
+      `/land_info${buildQuery(req, { address_type: 'road' })}`,
+    );
+  });
+
+  app.get('/api/airtect/law_search', async (req, res) => {
+    if (
+      typeof req.query.target !== 'string' ||
+      typeof req.query.law_id !== 'string'
+    ) {
+      res.status(400).json({ error: 'Missing target or law_id.' });
+      return;
+    }
+
+    await proxyAirtect(req, res, `/law_search${buildQuery(req)}`);
+  });
+
+  app.get('/api/airtect/applicable_laws', async (req, res) => {
+    if (typeof req.query.address !== 'string' || !req.query.address.trim()) {
+      res.status(400).json({ error: 'Missing address.' });
+      return;
+    }
+
+    await proxyAirtect(
+      req,
+      res,
+      `/applicable_laws${buildQuery(req, { address_type: 'road' })}`,
+    );
+  });
+
+  app.get('/api/airtect/overview', async (req, res) => {
+    await proxyAirtect(
+      req,
+      res,
+      `/overview${buildQuery(req, { address_type: 'road' })}`,
+    );
+  });
+
+  app.get('/api/airtect/feasibility', async (req, res) => {
+    await proxyAirtect(
+      req,
+      res,
+      `/feasibility${buildQuery(req, {
+        address_type: 'road',
+        mode: 'detailed',
+      })}`,
+    );
+  });
+
+  app.get('/api/airtect/site_shp', async (req, res) => {
+    await proxyAirtect(
+      req,
+      res,
+      `/site_shp${buildQuery(req, { address_type: 'road' })}`,
+      undefined,
+      'application/octet-stream, application/zip, application/json',
+    );
+  });
+
+  app.get('/api/airtect/land-eum', async (req, res) => {
+    await proxyAirtect(req, res, `/land-eum${buildQuery(req)}`);
+  });
+
+  app.post('/api/airtect/applicable-laws', async (req, res) => {
+    await proxyAirtect(req, res, '/applicable-laws', {
+      method: 'POST',
+      body: JSON.stringify(req.body),
+    });
+  });
+}
+
 async function startServer() {
   assertSecureAirtectUrl();
 
@@ -199,7 +320,10 @@ async function startServer() {
   app.use(express.json({ limit: '2mb' }));
 
   app.get('/api/health', (_req, res) => {
-    res.json({ status: 'ok' });
+    res.json({
+      status: 'ok',
+      mode: process.env.ARCENTER_TEST_MODE === 'false' ? 'full' : 'limited',
+    });
   });
 
   const aiLimiter = createUserRateLimit(20);
@@ -212,21 +336,7 @@ async function startServer() {
   for (const prefix of aiPrefixes) {
     registerAiRoutes(app, prefix);
   }
-
-  app.get('/api/airtect/land-eum', async (req, res) => {
-    const query = new URLSearchParams();
-    for (const [key, value] of Object.entries(req.query)) {
-      if (typeof value === 'string') query.set(key, value);
-    }
-    await proxyAirtect(req, res, `/land-eum?${query.toString()}`);
-  });
-
-  app.post('/api/airtect/applicable-laws', async (req, res) => {
-    await proxyAirtect(req, res, '/applicable-laws', {
-      method: 'POST',
-      body: JSON.stringify(req.body),
-    });
-  });
+  registerAirtectRoutes(app);
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
