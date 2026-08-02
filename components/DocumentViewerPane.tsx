@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Check, ExternalLink, Layout, Save, X } from 'lucide-react';
+import { AlertTriangle, Check, ExternalLink, Layout, Save, X } from 'lucide-react';
 import Markdown from 'react-markdown';
 import { KnowledgeFile } from '../types';
 import {
@@ -85,7 +85,7 @@ export const DocumentViewerPane: React.FC<DocumentViewerPaneProps> = ({
               href={config.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="p-1.5 text-gray-400 hover:text-blue-500 rounded-md"
+              className="p-1.5 text-blue-600 hover:text-blue-800 rounded-md bg-blue-50 hover:bg-blue-100"
               title="새 창에서 열기"
             >
               <ExternalLink size={14} />
@@ -101,6 +101,15 @@ export const DocumentViewerPane: React.FC<DocumentViewerPaneProps> = ({
         </div>
       </div>
 
+      {config.type === 'web' && (
+        <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-900 flex items-start gap-2">
+          <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+          <span>
+            일부 사이트는 보안 정책으로 앱 내부 열람을 차단합니다. 화면이 비거나 ‘Load failed’가 보이면 오른쪽 위 새 창 열기 버튼을 사용해 주세요.
+          </span>
+        </div>
+      )}
+
       <div className="flex-1 overflow-auto bg-white relative">
         {config.type === 'web' && (
           <iframe
@@ -110,6 +119,7 @@ export const DocumentViewerPane: React.FC<DocumentViewerPaneProps> = ({
             }`}
             title="Web Preview"
             sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+            loading="lazy"
           />
         )}
 
