@@ -17,6 +17,13 @@ interface AIResponse {
   groundingChunks?: GroundingChunk[];
 }
 
+const EXAMPLE_PROJECT_SUGGESTIONS = [
+  '현재 계획한 승객용 6대와 서비스용 1대가 업무 상주 2,200명과 판매시설 피크 600명을 수용하기에 적절한지, 법정 최소와 운영 권장안을 나눠 검토해 주세요.',
+  '업무시설 32,000㎡와 판매시설 6,000㎡에 계획한 주차 360대가 충분한지, 법정 주차대수와 평면 조정안을 정리해 주세요.',
+  '지상 24층·높이 108m, 특별피난계단 2개와 코어 2개 계획에서 피난·비상용·피난용 승강기 구성을 검토해 주세요.',
+  '대지 8,200㎡, 건축면적 4,510㎡, 용적률 산정 연면적 38,700㎡ 계획에서 실제 개발규모를 제한할 추가 조건과 배치 대안을 찾아주세요.',
+];
+
 function friendlyApiMessage(status: number, message: string, fallback: string): string {
   if (status === 401) {
     return '로그인 세션이 만료되었습니다. 다시 로그인해 주세요.';
@@ -110,6 +117,15 @@ export const getInitialSuggestions = async (
   urls: string[],
   folderName = '',
 ): Promise<AIResponse> => {
+  if (
+    folderName.includes('예시 프로젝트') ||
+    folderName.includes('빠른 체험')
+  ) {
+    return {
+      text: JSON.stringify({ suggestions: EXAMPLE_PROJECT_SUGGESTIONS }),
+    };
+  }
+
   const response = await authorizedFetch('/api/ai/suggestions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
