@@ -11,7 +11,7 @@ import {
 } from '../types';
 import { authorizedFetch } from './authFetch';
 
-interface GeminiResponse {
+interface AIResponse {
   text: string;
   urlContextMetadata?: UrlContextMetadataItem[];
   groundingChunks?: GroundingChunk[];
@@ -30,7 +30,7 @@ export const selectRelevantDocuments = async (
   query: string,
   documents: { id: string; name: string }[],
 ): Promise<string[]> => {
-  const response = await authorizedFetch('/api/gemini/select-documents', {
+  const response = await authorizedFetch('/api/ai/select-documents', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, documents }),
@@ -52,8 +52,8 @@ export const generateContent = async (
   personalRules: PersonalRule[] = [],
   folderContext = '',
   activeGroupAddress = '',
-): Promise<GeminiResponse> => {
-  const response = await authorizedFetch('/api/gemini/generate', {
+): Promise<AIResponse> => {
+  const response = await authorizedFetch('/api/ai/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -77,8 +77,8 @@ export const generateContent = async (
 export const getInitialSuggestions = async (
   urls: string[],
   folderName = '',
-): Promise<GeminiResponse> => {
-  const response = await authorizedFetch('/api/gemini/suggestions', {
+): Promise<AIResponse> => {
+  const response = await authorizedFetch('/api/ai/suggestions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ urls, folderName }),
@@ -94,7 +94,7 @@ export const getInitialSuggestions = async (
 export const extractPrinciples = async (
   conversation: string,
 ): Promise<string[]> => {
-  const response = await authorizedFetch('/api/gemini/extract-principles', {
+  const response = await authorizedFetch('/api/ai/extract-principles', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ conversation }),
@@ -115,7 +115,7 @@ export const analyzeProjectAddress = async (
   suggestedLaws: string[];
   matchedLibraryFolderIds: string[];
 }> => {
-  const response = await authorizedFetch('/api/gemini/analyze-address', {
+  const response = await authorizedFetch('/api/ai/analyze-address', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ address, libraryFolders }),
