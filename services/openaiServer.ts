@@ -7,6 +7,10 @@ import {
 } from '../types';
 
 const MODEL_NAME = process.env.OPENAI_MODEL || 'gpt-5-mini';
+const TEST_MODE = process.env.ARCENTER_TEST_MODE !== 'false';
+const MAX_CONTEXT_URLS = TEST_MODE ? 4 : 20;
+const MAX_CONTEXT_FILES = TEST_MODE ? 2 : 10;
+const MAX_SELECTED_DOCUMENTS = TEST_MODE ? 8 : 20;
 let openai: OpenAI | null = null;
 
 function getOpenAI(): OpenAI {
@@ -118,7 +122,7 @@ function toFileDataUri(file: KnowledgeFile): string | null {
 function buildFileContent(files: KnowledgeFile[]): any[] {
   const content: any[] = [];
 
-  for (const file of files) {
+  for (const file of files.slice(0, MAX_CONTEXT_FILES)) {
     const fileData = toFileDataUri(file);
     if (!fileData) continue;
 
@@ -172,6 +176,55 @@ function extractGroundingChunks(response: any): GroundingChunk[] | undefined {
   return chunks.length > 0 ? chunks : undefined;
 }
 
+function prioritizeUrls(prompt: string, urls: string[]): string[] {
+  if (urls.length <= MAX_CONTEXT_URLS) return urls;
+
+  const compactPrompt = prompt.replace(/\s+/g, '').toLowerCase();
+  const scores = urls.map((url, index) => {
+    let score = Math.max(0, 10 - index);
+
+    const addScore = (keywords: string[], lawIds: string[], value: number) => {
+      if (
+        keywords.some((keyword) => compactPrompt.includes(keyword)) &&
+        lawIds.some((lawId) => url.includes(lawId))
+      ) {
+        score += value;
+      }
+    };
+
+    addScore(
+      ['주차', '주차대수', '주차장'],
+      ['001814', '004946', '008238'],
+      120,
+    );
+    addScore(
+      ['피난', '방화', '내화', '계단', '출구', '방화구획'],
+      ['006189'],
+      120,
+    );
+    addScore(
+      ['용도지역', '용도지구', '용도구역', '건폐율', '용적률', '도시계획'],
+      ['009294', '009419'],
+      110,
+    );
+    addScore(
+      ['허가', '신고', '대지', '도로', '높이', '일조', '공개공지', '건축선'],
+      ['001823', '002118'],
+      100,
+    );
+
+    if (url.includes('001823')) score += 35;
+    if (url.includes('002118')) score += 30;
+
+    return { url, score, index };
+  });
+
+  return scores
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, MAX_CONTEXT_URLS)
+    .map((item) => item.url);
+}
+
 export async function selectRelevantDocuments({
   query,
   documents = [],
@@ -183,7 +236,7 @@ export async function selectRelevantDocuments({
     name: 'document_selection',
     instructions:
       'Select only the document IDs most relevant to the user query. Never invent an ID.',
-    input: `사용자 질문:\n${query}\n\n선택 가능한 문서 목록:\n${JSON.stringify(documents)}\n\n가장 관련 있는 문서를 최대 20개 선택하세요.`,
+    input: `사용자 질문:\n${query}\n\n선택 가능한 문서 목록:\n${JSON.stringify(documents)}\n\n가장 관련 있는 문서를 최대 ${MAX_SELECTED_DOCUMENTS}개 선택하세요.`,
     schema: {
       type: 'object',
       additionalProperties: false,
@@ -200,7 +253,7 @@ export async function selectRelevantDocuments({
   const validIds = new Set(documents.map((document) => document.id));
   return result.selected_ids
     .filter((id) => validIds.has(id))
-    .slice(0, 20);
+    .slice(0, MAX_SELECTED_DOCUMENTS);
 }
 
 export async function generateContent({
@@ -238,14 +291,16 @@ export async function generateContent({
 4. 확실하지 않은 내용은 추측하지 않고 추가 확인이 필요하다고 밝힙니다.
 5. 제공된 문서와 URL을 우선 사용하고, 웹 검색이 허용된 경우 최신 공식 출처를 확인합니다.
 6. 웹 검색 모드에서는 웹 검색 도구를 사용해 최신 공개 정보를 확인하고 출처에 근거해 답변합니다.
-7. 검색 과정이나 내부 처리 과정은 설명하지 않고 최종 검토 결과만 제시합니다.
+7. 지역 조례나 지구단위계획이 필요한 질문에는 대상지 정보가 추가로 필요하다고 명확히 안내합니다.
+8. 검색 과정이나 내부 처리 과정은 설명하지 않고 최종 검토 결과만 제시합니다.
+${TEST_MODE ? `\n현재는 테스트 운영 중이며 한 질문당 최대 ${MAX_CONTEXT_URLS}개 URL과 ${MAX_CONTEXT_FILES}개 파일만 확인합니다.` : ''}
 ${activeRules ? `\n사용자의 개인 작업 원칙:\n${activeRules}` : ''}
 ${folderContext ? `\n현재 프로젝트/폴더: ${folderContext}` : ''}
 ${activeGroupAddress ? `\n대상지 주소: ${activeGroupAddress}` : ''}`;
 
-  const urlsForContext = urls.slice(0, 20);
+  const urlsForContext = prioritizeUrls(prompt, urls);
   const urlContext = urlsForContext.length
-    ? `\n\n우선 검토할 URL:\n${urlsForContext.join('\n')}`
+    ? `\n\n우선 검토할 공식 URL:\n${urlsForContext.join('\n')}`
     : '';
   const searchInstruction = useSearch
     ? '\n\n이 질문은 웹 검색 모드입니다. 최신 공개 정보를 웹에서 확인한 뒤, 확인한 출처를 근거로 답변하세요.'
@@ -268,7 +323,7 @@ ${activeGroupAddress ? `\n대상지 주소: ${activeGroupAddress}` : ''}`;
         content: inputContent,
       },
     ],
-    max_output_tokens: 8_000,
+    max_output_tokens: TEST_MODE ? 3_000 : 8_000,
     reasoning: { effort: 'low' },
     text: { verbosity: 'medium' },
     store: false,
@@ -278,7 +333,7 @@ ${activeGroupAddress ? `\n대상지 주소: ${activeGroupAddress}` : ''}`;
     request.tools = [
       {
         type: 'web_search',
-        search_context_size: 'medium',
+        search_context_size: TEST_MODE ? 'low' : 'medium',
       },
     ];
     request.tool_choice = 'auto';
@@ -304,7 +359,20 @@ export async function getInitialSuggestions({
   urls?: string[];
   folderName?: string;
 }): Promise<{ text: string }> {
-  const urlsForPrompt = urls.slice(0, 20);
+  if (TEST_MODE && folderName.includes('빠른 체험')) {
+    return {
+      text: JSON.stringify({
+        suggestions: [
+          '건폐율과 용적률은 어떤 법령 순서로 검토해야 하나요?',
+          '피난계단과 방화구획의 기본 검토 항목을 정리해 주세요.',
+          '주차대수 검토에 필요한 법령과 추가 지역정보를 알려 주세요.',
+          '건축허가 전에 확인해야 할 핵심 법규를 체크리스트로 정리해 주세요.',
+        ],
+      }),
+    };
+  }
+
+  const urlsForPrompt = urls.slice(0, MAX_CONTEXT_URLS);
   const result = await createStructuredResponse<{ suggestions: string[] }>({
     name: 'initial_suggestions',
     instructions:
@@ -333,6 +401,10 @@ export async function extractPrinciples({
 }: {
   conversation: string;
 }): Promise<string[]> {
+  if (TEST_MODE) {
+    return [];
+  }
+
   const result = await createStructuredResponse<{ principles: string[] }>({
     name: 'personal_principles',
     instructions:
