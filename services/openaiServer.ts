@@ -1,0 +1,519 @@
+import OpenAI from 'openai';
+import {
+  GroundingChunk,
+  KnowledgeFile,
+  PersonalRule,
+  UrlContextMetadataItem,
+} from '../types';
+import { buildAirtectEvidence } from './airtectEvidenceServer';
+
+const MODEL_NAME = process.env.OPENAI_MODEL || 'gpt-5-mini';
+const TEST_MODE = process.env.ARCENTER_TEST_MODE !== 'false';
+const MAX_CONTEXT_URLS = TEST_MODE ? 4 : 20;
+const MAX_CONTEXT_FILES = TEST_MODE ? 2 : 10;
+const MAX_SELECTED_DOCUMENTS = TEST_MODE ? 8 : 20;
+let openai: OpenAI | null = null;
+
+function getOpenAI(): OpenAI {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error('OPENAI_API_KEY environment variable is not set.');
+  }
+
+  if (!openai) {
+    openai = new OpenAI({ apiKey });
+  }
+
+  return openai;
+}
+
+type StructuredSchema = Record<string, unknown>;
+
+function extractResponseText(response: any): string {
+  const sdkText = response.output_text?.trim();
+  if (sdkText) return sdkText;
+
+  const parts: string[] = [];
+  for (const item of response.output || []) {
+    if (item.type !== 'message') continue;
+    for (const content of item.content || []) {
+      if (content.type === 'output_text' && typeof content.text === 'string') {
+        parts.push(content.text);
+      }
+      if (content.type === 'refusal' && typeof content.refusal === 'string') {
+        parts.push(content.refusal);
+      }
+    }
+  }
+
+  return parts.join('\n').trim();
+}
+
+function createEmptyResponseError(response: any, label: string): Error {
+  const status = response.status || 'unknown';
+  const incompleteReason = response.incomplete_details?.reason;
+  const outputTypes = (response.output || []).map((item: any) => item.type);
+
+  console.error(`${label} returned no text`, {
+    responseId: response.id,
+    status,
+    incompleteReason,
+    outputTypes,
+    usage: response.usage,
+    error: response.error,
+  });
+
+  if (response.error?.message) {
+    return new Error(`OpenAI 오류: ${response.error.message}`);
+  }
+
+  if (status === 'incomplete' && incompleteReason === 'max_output_tokens') {
+    return new Error(
+      'AI가 답변을 마치기 전에 출력 한도에 도달했습니다. 질문 범위를 조금 줄여 다시 시도해 주세요.',
+    );
+  }
+
+  return new Error(
+    'AI가 답변 내용을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+  );
+}
+
+async function createStructuredResponse<T>(options: {
+  name: string;
+  schema: StructuredSchema;
+  instructions: string;
+  input: string;
+  maxOutputTokens?: number;
+}): Promise<T> {
+  const response = await getOpenAI().responses.create({
+    model: MODEL_NAME,
+    instructions: options.instructions,
+    input: options.input,
+    max_output_tokens: options.maxOutputTokens || 2_000,
+    reasoning: { effort: 'low' },
+    store: false,
+    text: {
+      verbosity: 'low',
+      format: {
+        type: 'json_schema',
+        name: options.name,
+        strict: true,
+        schema: options.schema,
+      },
+    },
+  } as any);
+
+  const text = extractResponseText(response);
+  if (!text) {
+    throw createEmptyResponseError(response, options.name);
+  }
+
+  return JSON.parse(text) as T;
+}
+
+function toFileDataUri(file: KnowledgeFile): string | null {
+  const value = file.base64Data;
+  if (!value) return null;
+  if (value.startsWith('data:')) return value;
+
+  const mimeType = file.mimeType || 'application/octet-stream';
+  return `data:${mimeType};base64,${value}`;
+}
+
+function buildFileContent(files: KnowledgeFile[]): any[] {
+  const content: any[] = [];
+
+  for (const file of files.slice(0, MAX_CONTEXT_FILES)) {
+    const fileData = toFileDataUri(file);
+    if (!fileData) continue;
+
+    if (file.mimeType?.startsWith('image/')) {
+      content.push({
+        type: 'input_image',
+        image_url: fileData,
+        detail: 'auto',
+      });
+      continue;
+    }
+
+    content.push({
+      type: 'input_file',
+      file_data: fileData,
+      filename: file.name || 'document',
+    });
+  }
+
+  return content;
+}
+
+function extractGroundingChunks(response: any): GroundingChunk[] {
+  const chunks: GroundingChunk[] = [];
+  const seen = new Set<string>();
+
+  for (const item of response.output || []) {
+    if (item.type !== 'message') continue;
+
+    for (const content of item.content || []) {
+      if (content.type !== 'output_text') continue;
+
+      for (const annotation of content.annotations || []) {
+        if (annotation.type !== 'url_citation') continue;
+
+        const uri = annotation.url || annotation.url_citation?.url;
+        if (!uri || seen.has(uri)) continue;
+
+        seen.add(uri);
+        chunks.push({
+          web: {
+            uri,
+            title:
+              annotation.title || annotation.url_citation?.title || uri,
+          },
+        });
+      }
+    }
+  }
+
+  return chunks;
+}
+
+function mergeGroundingChunks(
+  ...groups: Array<GroundingChunk[] | undefined>
+): GroundingChunk[] | undefined {
+  const seen = new Set<string>();
+  const merged: GroundingChunk[] = [];
+
+  for (const group of groups) {
+    for (const item of group || []) {
+      const uri = item.web?.uri;
+      if (!uri || seen.has(uri)) continue;
+      seen.add(uri);
+      merged.push(item);
+    }
+  }
+
+  return merged.length > 0 ? merged : undefined;
+}
+
+function prioritizeUrls(prompt: string, urls: string[]): string[] {
+  if (urls.length <= MAX_CONTEXT_URLS) return urls;
+
+  const compactPrompt = prompt.replace(/\s+/g, '').toLowerCase();
+  const scores = urls.map((url, index) => {
+    let score = Math.max(0, 10 - index);
+
+    const addScore = (keywords: string[], lawIds: string[], value: number) => {
+      if (
+        keywords.some((keyword) => compactPrompt.includes(keyword)) &&
+        lawIds.some((lawId) => url.includes(lawId))
+      ) {
+        score += value;
+      }
+    };
+
+    addScore(
+      ['주차', '주차대수', '주차장'],
+      ['001814', '004946', '008238'],
+      120,
+    );
+    addScore(
+      ['피난', '방화', '내화', '계단', '출구', '방화구획'],
+      ['006189'],
+      120,
+    );
+    addScore(
+      ['용도지역', '용도지구', '용도구역', '건폐율', '용적률', '도시계획'],
+      ['009294', '009419'],
+      110,
+    );
+    addScore(
+      ['허가', '신고', '대지', '도로', '높이', '일조', '공개공지', '건축선'],
+      ['001823', '002118'],
+      100,
+    );
+
+    if (url.includes('001823')) score += 35;
+    if (url.includes('002118')) score += 30;
+
+    return { url, score, index };
+  });
+
+  return scores
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, MAX_CONTEXT_URLS)
+    .map((item) => item.url);
+}
+
+export async function selectRelevantDocuments({
+  query,
+  documents = [],
+}: {
+  query: string;
+  documents: { id: string; name: string }[];
+}): Promise<string[]> {
+  const result = await createStructuredResponse<{ selected_ids: string[] }>({
+    name: 'document_selection',
+    instructions:
+      'Select only the document IDs most relevant to the user query. Never invent an ID.',
+    input: `사용자 질문:\n${query}\n\n선택 가능한 문서 목록:\n${JSON.stringify(documents)}\n\n가장 관련 있는 문서를 최대 ${MAX_SELECTED_DOCUMENTS}개 선택하세요.`,
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        selected_ids: {
+          type: 'array',
+          items: { type: 'string' },
+        },
+      },
+      required: ['selected_ids'],
+    },
+  });
+
+  const validIds = new Set(documents.map((document) => document.id));
+  return result.selected_ids
+    .filter((id) => validIds.has(id))
+    .slice(0, MAX_SELECTED_DOCUMENTS);
+}
+
+export async function generateContent({
+  prompt,
+  urls = [],
+  files = [],
+  useSearch = false,
+  personalRules = [],
+  folderContext = '',
+  activeGroupAddress = '',
+}: {
+  prompt: string;
+  urls?: string[];
+  files?: KnowledgeFile[];
+  useSearch?: boolean;
+  personalRules?: PersonalRule[];
+  folderContext?: string;
+  activeGroupAddress?: string;
+}): Promise<{
+  text: string;
+  urlContextMetadata?: UrlContextMetadataItem[];
+  groundingChunks?: GroundingChunk[];
+}> {
+  const activeRules = personalRules
+    .filter((rule) => rule.isActive)
+    .map((rule) => rule.text)
+    .join('\n');
+
+  const urlsForContext = prioritizeUrls(prompt, urls);
+  const apiEvidence = useSearch
+    ? {
+        context: '',
+        sources: [] as GroundingChunk[],
+        successCount: 0,
+        attemptedCount: 0,
+        errors: [] as string[],
+      }
+    : await buildAirtectEvidence({
+        prompt,
+        urls: urlsForContext,
+        activeGroupAddress,
+      });
+
+  const hasApiEvidence = apiEvidence.successCount > 0;
+  const shouldUseFallbackWeb =
+    !useSearch &&
+    !hasApiEvidence &&
+    urlsForContext.length > 0 &&
+    apiEvidence.attemptedCount > 0;
+
+  const instructions = `당신은 대한민국 건축가를 위한 건축 법규 검토 AI 어시스턴트입니다.
+
+답변 원칙:
+1. 모든 답변은 한국어로 작성합니다.
+2. 외부 FastAPI의 구조화된 법령·토지 데이터가 제공되면 이를 가장 우선하는 근거로 사용합니다.
+3. API 데이터에 없는 수치·조문·판단은 추측하지 않고 '추가 확인 필요'라고 표시합니다.
+4. 법령명, 조문, 적용 조건과 예외를 구분해 설명합니다.
+5. 답변은 '검토 결과 → 근거 → 추가 확인사항' 순서로 간결하게 구성합니다.
+6. 지역 조례나 지구단위계획이 필요한 질문에는 대상지 정보가 추가로 필요하다고 명확히 안내합니다.
+7. 원문 HTML 링크는 채팅 아래의 '근거 원문' 영역에 별도로 제공되므로, 본문에는 법령명과 조문을 명확히 적습니다.
+8. 웹 검색 모드이거나 API 호출이 실패해 공식 원문 확인이 필요한 경우에만 웹 검색 결과를 보조 근거로 사용합니다.
+9. 검색 과정이나 내부 처리 과정은 설명하지 않고 최종 검토 결과만 제시합니다.
+${TEST_MODE ? `\n현재는 제한 운영 중이며 한 질문당 최대 ${MAX_CONTEXT_URLS}개 법령 URL과 ${MAX_CONTEXT_FILES}개 파일을 처리합니다.` : ''}
+${activeRules ? `\n사용자의 개인 작업 원칙:\n${activeRules}` : ''}
+${folderContext ? `\n현재 프로젝트/폴더: ${folderContext}` : ''}
+${activeGroupAddress ? `\n대상지 주소: ${activeGroupAddress}` : ''}`;
+
+  const officialUrlFallback =
+    shouldUseFallbackWeb && urlsForContext.length > 0
+      ? `\n\nFastAPI가 현재 응답하지 않아 다음 공식 원문 URL을 웹에서 확인해 보완하세요:\n${urlsForContext.join('\n')}`
+      : '';
+  const searchInstruction = useSearch
+    ? '\n\n이 질문은 웹 검색 모드입니다. 최신 공개 정보를 웹에서 확인한 뒤 출처에 근거해 답변하세요.'
+    : shouldUseFallbackWeb
+      ? '\n\nFastAPI 근거를 가져오지 못했습니다. 제공된 법제처 공식 원문을 우선 확인하고, 확인하지 못한 내용은 단정하지 마세요.'
+      : '';
+
+  const inputContent: any[] = [
+    {
+      type: 'input_text',
+      text: `${prompt}${apiEvidence.context}${officialUrlFallback}${searchInstruction}`,
+    },
+    ...buildFileContent(files),
+  ];
+
+  const request: any = {
+    model: MODEL_NAME,
+    instructions,
+    input: [
+      {
+        role: 'user',
+        content: inputContent,
+      },
+    ],
+    max_output_tokens: TEST_MODE ? 3_000 : 8_000,
+    reasoning: { effort: 'low' },
+    text: { verbosity: 'medium' },
+    store: false,
+  };
+
+  if (useSearch || shouldUseFallbackWeb) {
+    request.tools = [
+      {
+        type: 'web_search',
+        search_context_size: TEST_MODE ? 'low' : 'medium',
+      },
+    ];
+    request.tool_choice = 'auto';
+  }
+
+  const response = await getOpenAI().responses.create(request);
+  const text = extractResponseText(response);
+
+  if (!text) {
+    throw createEmptyResponseError(response, 'generateContent');
+  }
+
+  return {
+    text,
+    groundingChunks: mergeGroundingChunks(
+      apiEvidence.sources,
+      extractGroundingChunks(response),
+    ),
+  };
+}
+
+export async function getInitialSuggestions({
+  urls = [],
+  folderName = '',
+}: {
+  urls?: string[];
+  folderName?: string;
+}): Promise<{ text: string }> {
+  if (TEST_MODE && folderName.includes('빠른 체험')) {
+    return {
+      text: JSON.stringify({
+        suggestions: [
+          '건폐율과 용적률은 어떤 법령 순서로 검토해야 하나요?',
+          '피난계단과 방화구획의 기본 검토 항목을 정리해 주세요.',
+          '주차대수 검토에 필요한 법령과 추가 지역정보를 알려 주세요.',
+          '건축허가 전에 확인해야 할 핵심 법규를 체크리스트로 정리해 주세요.',
+        ],
+      }),
+    };
+  }
+
+  const urlsForPrompt = urls.slice(0, MAX_CONTEXT_URLS);
+  const result = await createStructuredResponse<{ suggestions: string[] }>({
+    name: 'initial_suggestions',
+    instructions:
+      'Generate 3 to 4 concise, actionable Korean questions for an architect. Return only the requested structure.',
+    input: `현재 폴더: ${folderName}\n\n참고 URL:\n${urlsForPrompt.join('\n')}\n\n이 자료를 바탕으로 사용자가 물어볼 만한 구체적인 질문 3~4개를 제안하세요.`,
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        suggestions: {
+          type: 'array',
+          items: { type: 'string' },
+        },
+      },
+      required: ['suggestions'],
+    },
+  });
+
+  return {
+    text: JSON.stringify({ suggestions: result.suggestions.slice(0, 4) }),
+  };
+}
+
+export async function extractPrinciples({
+  conversation,
+}: {
+  conversation: string;
+}): Promise<string[]> {
+  if (TEST_MODE) {
+    return [];
+  }
+
+  const result = await createStructuredResponse<{ principles: string[] }>({
+    name: 'personal_principles',
+    instructions:
+      'Extract 1 to 3 concise and actionable personal work principles in Korean.',
+    input: `다음 대화에서 사용자가 중요하게 여기는 작업 원칙을 1~3개 추출하세요.\n\n${conversation}`,
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        principles: {
+          type: 'array',
+          items: { type: 'string' },
+        },
+      },
+      required: ['principles'],
+    },
+  });
+
+  return result.principles.slice(0, 3);
+}
+
+export async function analyzeProjectAddress({
+  address,
+  libraryFolders = [],
+}: {
+  address: string;
+  libraryFolders?: { id: string; name: string }[];
+}): Promise<{
+  suggestedLaws: string[];
+  matchedLibraryFolderIds: string[];
+}> {
+  const result = await createStructuredResponse<{
+    suggested_laws: string[];
+    matched_folder_ids: string[];
+  }>({
+    name: 'address_analysis',
+    instructions:
+      'You are a Korean architectural regulation specialist. Suggest 3 to 5 laws and match only folder IDs that exist in the supplied list.',
+    input: `프로젝트 주소:\n${address}\n\n사용자 라이브러리 폴더:\n${JSON.stringify(libraryFolders)}\n\n주소에 관련성이 높은 건축 법규 3~5개와 관련 폴더 ID를 제안하세요.`,
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        suggested_laws: {
+          type: 'array',
+          items: { type: 'string' },
+        },
+        matched_folder_ids: {
+          type: 'array',
+          items: { type: 'string' },
+        },
+      },
+      required: ['suggested_laws', 'matched_folder_ids'],
+    },
+  });
+
+  const validFolderIds = new Set(libraryFolders.map((folder) => folder.id));
+
+  return {
+    suggestedLaws: result.suggested_laws.slice(0, 5),
+    matchedLibraryFolderIds: result.matched_folder_ids.filter((id) =>
+      validFolderIds.has(id),
+    ),
+  };
+}

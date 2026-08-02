@@ -3,104 +3,124 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
-import { ShieldCheck, Sparkles, Scale, Briefcase, Layout } from 'lucide-react';
-import { motion } from 'motion/react';
+import React, { useState } from 'react';
+import { supabase } from '../services/supabaseClient';
 
 interface LoginScreenProps {
-  onLogin: () => void;
+  onLogin?: () => void;
   isLoading?: boolean;
 }
 
-const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, isLoading }) => {
+const LoginScreen: React.FC<LoginScreenProps> = ({ isLoading = false }) => {
+  const [email, setEmail] = useState('');
+  const [isSending, setIsSending] = useState(false);
+  const [isSent, setIsSent] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail) {
+      setErrorMessage('이메일 주소를 입력해 주세요.');
+      return;
+    }
+
+    setIsSending(true);
+    setErrorMessage('');
+
+    const { error } = await supabase.auth.signInWithOtp({
+      email: normalizedEmail,
+      options: {
+        emailRedirectTo: window.location.origin,
+        shouldCreateUser: true,
+      },
+    });
+
+    setIsSending(false);
+
+    if (error) {
+      console.error('Email sign-in failed:', error);
+      setErrorMessage('로그인 메일을 보내지 못했습니다. 잠시 후 다시 시도해 주세요.');
+      return;
+    }
+
+    setIsSent(true);
+  };
+
   return (
-    <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center p-6 relative overflow-hidden">
-      {/* Background Ornaments */}
-      <div className="absolute top-0 left-0 w-full h-full overflow-hidden pointer-events-none">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-purple-100/50 rounded-full blur-[120px]" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-blue-100/50 rounded-full blur-[120px]" />
-      </div>
-
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8, ease: "easeOut" }}
-        className="max-w-md w-full relative z-10"
-      >
-        <div className="bg-white rounded-[48px] shadow-2xl shadow-slate-200 border border-slate-100 p-12 text-center">
-          {/* Logo / Icon */}
-          <div className="flex justify-center mb-8">
-            <div className="relative">
-              <div className="w-24 h-24 bg-slate-900 rounded-[32px] flex items-center justify-center shadow-xl rotate-3 group-hover:rotate-0 transition-transform">
-                <Scale size={42} className="text-white" />
-              </div>
-              <div className="absolute -top-3 -right-3 w-10 h-10 bg-purple-600 rounded-2xl flex items-center justify-center shadow-lg -rotate-12">
-                <Sparkles size={20} className="text-white" />
-              </div>
-            </div>
+    <main className="min-h-screen bg-slate-50 flex items-center justify-center p-5">
+      <section className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-7 sm:p-10 shadow-xl shadow-slate-200/60">
+        <div className="mb-8">
+          <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-900 text-xl font-black text-white">
+            AR
           </div>
-
-          <h1 className="text-3xl font-black text-slate-900 tracking-tight mb-3">
-            Archi-Assistant
+          <h1 className="text-3xl font-black tracking-tight text-slate-900">
+            ARCenter
           </h1>
-          <p className="text-slate-500 font-medium mb-12 leading-relaxed">
-            인공지능 기반 건축 법규 검토 및 <br />
-            프로젝트 관리 솔루션
+          <p className="mt-3 text-sm leading-6 text-slate-500">
+            건축 프로젝트별 법규 자료와 검토 기록을 안전하게 관리합니다.
           </p>
+        </div>
 
-          <div className="space-y-4 mb-12">
-            <div className="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-100">
-              <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center shadow-sm text-purple-600">
-                <ShieldCheck size={20} />
-              </div>
-              <div className="text-left">
-                <p className="text-xs font-black text-slate-900">법규 엔진 탑재</p>
-                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Real-time Law Analysis</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-100">
-              <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center shadow-sm text-blue-600">
-                <Briefcase size={20} />
-              </div>
-              <div className="text-left">
-                <p className="text-xs font-black text-slate-900">프로젝트 관리</p>
-                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Workspace Management</p>
-              </div>
-            </div>
+        {isSent ? (
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5">
+            <p className="font-bold text-emerald-950">로그인 메일을 보냈습니다.</p>
+            <p className="mt-2 break-all text-sm leading-6 text-emerald-800">
+              {email.trim()} 메일함에서 로그인 링크를 눌러 주세요.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setIsSent(false);
+                setErrorMessage('');
+              }}
+              className="mt-4 text-sm font-bold text-emerald-800 underline underline-offset-4"
+            >
+              다른 이메일 사용
+            </button>
           </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label
+                htmlFor="login-email"
+                className="mb-2 block text-sm font-bold text-slate-700"
+              >
+                이메일
+              </label>
+              <input
+                id="login-email"
+                type="email"
+                autoComplete="email"
+                inputMode="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="name@example.com"
+                disabled={isSending || isLoading}
+                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-4 text-base text-slate-900 outline-none transition focus:border-slate-900 focus:ring-4 focus:ring-slate-100 disabled:opacity-60"
+              />
+            </div>
 
-          <button
-            onClick={onLogin}
-            disabled={isLoading}
-            className="w-full py-4 bg-slate-900 hover:bg-purple-600 text-white rounded-2xl font-black text-sm transition-all shadow-xl shadow-slate-200 hover:shadow-purple-100 active:scale-[0.98] flex items-center justify-center gap-3 group disabled:opacity-50"
-          >
-            {isLoading ? (
-              <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-            ) : (
-              <>
-                <img src="https://www.google.com/favicon.ico" alt="Google" className="w-5 h-5 bg-white p-0.5 rounded" />
-                Google 계정으로 시작하기
-              </>
+            {errorMessage && (
+              <p className="text-sm font-medium text-red-600">{errorMessage}</p>
             )}
-          </button>
 
-          <p className="mt-8 text-[10px] text-slate-400 font-bold uppercase tracking-widest leading-relaxed">
-            By continuing, you agree to our <br />
-            Service Guidelines & Privacy Standards
-          </p>
-        </div>
+            <button
+              type="submit"
+              disabled={isSending || isLoading}
+              className="w-full rounded-2xl bg-slate-900 px-4 py-4 text-sm font-black text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isSending || isLoading ? '전송 중…' : '로그인 링크 받기'}
+            </button>
+          </form>
+        )}
 
-        {/* Footer Info */}
-        <div className="mt-8 flex items-center justify-center gap-6 opacity-40">
-           <div className="flex items-center gap-2">
-              <div className="w-2 h-2 bg-green-500 rounded-full" />
-              <span className="text-[10px] font-black tracking-widest text-slate-500 uppercase">System Live</span>
-           </div>
-           <div className="w-1 h-1 bg-slate-300 rounded-full" />
-           <span className="text-[10px] font-black tracking-widest text-slate-500 uppercase">Vers. 2.5.0</span>
-        </div>
-      </motion.div>
-    </div>
+        <p className="mt-7 text-xs leading-5 text-slate-400">
+          비밀번호 없이 이메일로 받은 일회용 링크를 통해 로그인합니다.
+        </p>
+      </section>
+    </main>
   );
 };
 
