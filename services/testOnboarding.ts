@@ -58,9 +58,7 @@ async function upsertRows(table: string, rows: Record<string, unknown>[]) {
 
 export async function ensureTestWorkspace(userId: string): Promise<string> {
   const now = new Date().toISOString();
-  const quickProjectId = `${userId}-000-quick-start`;
-  const quickSessionId = `${quickProjectId}-welcome`;
-  const quickMessageId = `${quickSessionId}-message`;
+  const defaultQuickProjectId = `${userId}-000-quick-start`;
 
   const { data, error } = await supabase
     .from('groups')
@@ -139,9 +137,12 @@ export async function ensureTestWorkspace(userId: string): Promise<string> {
     ]);
   }
 
-  const existingQuickProject = groups.some(
-    (group) => group.id === quickProjectId || group.name === QUICK_START_PROJECT_NAME,
+  const existingQuickProject = groups.find(
+    (group) =>
+      group.id === defaultQuickProjectId ||
+      group.name === QUICK_START_PROJECT_NAME,
   );
+  const quickProjectId = existingQuickProject?.id ?? defaultQuickProjectId;
 
   if (!existingQuickProject) {
     await upsertRows('groups', [
@@ -162,6 +163,9 @@ export async function ensureTestWorkspace(userId: string): Promise<string> {
       },
     ]);
   }
+
+  const quickSessionId = `${quickProjectId}-welcome`;
+  const quickMessageId = `${quickSessionId}-message`;
 
   await upsertRows('chat_sessions', [
     {
