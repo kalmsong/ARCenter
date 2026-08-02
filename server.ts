@@ -89,6 +89,45 @@ function safeJsonError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+async function resolveProjectContext(
+  body: Record<string, unknown>,
+  userId: string,
+): Promise<Record<string, unknown> | null> {
+  let query = supabaseAdmin
+    .from('groups')
+    .select(
+      'id,name,project_address,project_addresses,lot_area,site_investigation,is_project,building_overview',
+    )
+    .eq('owner_id', userId)
+    .eq('is_project', true);
+
+  const groupId = typeof body.groupId === 'string' ? body.groupId.trim() : '';
+  const address =
+    typeof body.activeGroupAddress === 'string'
+      ? body.activeGroupAddress.split('\n').map((item) => item.trim()).find(Boolean) || ''
+      : '';
+  const folderName =
+    typeof body.folderContext === 'string' ? body.folderContext.trim() : '';
+
+  if (groupId) {
+    query = query.eq('id', groupId);
+  } else if (address) {
+    query = query.eq('project_address', address);
+  } else if (folderName) {
+    query = query.eq('name', folderName);
+  } else {
+    return null;
+  }
+
+  const { data, error } = await query.limit(1).maybeSingle();
+  if (error) {
+    console.warn('Failed to resolve project context:', error.message);
+    return null;
+  }
+
+  return (data as Record<string, unknown> | null) ?? null;
+}
+
 function buildQuery(req: Request, defaults?: Record<string, string>): string {
   const query = new URLSearchParams(defaults);
 
@@ -172,7 +211,31 @@ function registerAiRoutes(app: express.Express, prefix: string) {
         req.body.files || [],
         req.authUser!.id,
       );
-      res.json(await generateContent({ ...req.body, files }));
+      const projectContext = await resolveProjectContext(
+        req.body,
+        req.authUser!.id,
+      );
+
+      const registeredAddress =
+        typeof projectContext?.project_address === 'string'
+          ? projectContext.project_address
+          : '';
+      const projectName =
+        typeof projectContext?.name === 'string' ? projectContext.name : '';
+      const projectContextText = projectContext
+        ? `\n\n[등록된 프로젝트 계획정보]\n${JSON.stringify(projectContext)}`
+        : '';
+
+      res.json(
+        await generateContent({
+          ...req.body,
+          files,
+          prompt: `${String(req.body.prompt || '')}${projectContextText}`,
+          folderContext: req.body.folderContext || projectName,
+          activeGroupAddress:
+            req.body.activeGroupAddress || registeredAddress,
+        }),
+      );
     } catch (error) {
       console.error('OpenAI generation failed:', error);
       res.status(500).json({ error: safeJsonError(error) });
