@@ -17,13 +17,45 @@ interface AIResponse {
   groundingChunks?: GroundingChunk[];
 }
 
+function friendlyApiMessage(status: number, message: string, fallback: string): string {
+  if (status === 401) {
+    return '로그인 세션이 만료되었습니다. 다시 로그인해 주세요.';
+  }
+
+  if (status === 413) {
+    return '첨부한 자료가 너무 큽니다. 파일 수나 용량을 줄여 다시 시도해 주세요.';
+  }
+
+  if (status === 429) {
+    return '요청이 많아 잠시 제한되었습니다. 잠시 후 다시 시도해 주세요.';
+  }
+
+  if (/model.*not found|does not exist|unsupported model/i.test(message)) {
+    return '현재 설정된 AI 모델을 사용할 수 없습니다. 관리자에게 모델 설정을 확인해 달라고 요청해 주세요.';
+  }
+
+  if (/api key|OPENAI_API_KEY/i.test(message)) {
+    return 'AI 서버 설정에 문제가 있습니다. 관리자에게 API 설정 확인을 요청해 주세요.';
+  }
+
+  if (status >= 500) {
+    return `임시 서버에서 응답을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.${message ? ` (${message})` : ''}`;
+  }
+
+  return message || fallback;
+}
+
 async function readError(response: Response, fallback: string): Promise<Error> {
+  let message = '';
+
   try {
     const data = await response.json();
-    return new Error(data.error || fallback);
+    message = typeof data?.error === 'string' ? data.error : '';
   } catch {
-    return new Error(fallback);
+    message = '';
   }
+
+  return new Error(friendlyApiMessage(response.status, message, fallback));
 }
 
 export const selectRelevantDocuments = async (
@@ -37,7 +69,7 @@ export const selectRelevantDocuments = async (
   });
 
   if (!response.ok) {
-    throw await readError(response, 'Failed to select documents');
+    throw await readError(response, '관련 자료를 선별하지 못했습니다.');
   }
 
   const data = await response.json();
@@ -68,7 +100,7 @@ export const generateContent = async (
   });
 
   if (!response.ok) {
-    throw await readError(response, 'Failed to generate content');
+    throw await readError(response, 'AI 답변 생성에 실패했습니다.');
   }
 
   return response.json();
@@ -85,7 +117,7 @@ export const getInitialSuggestions = async (
   });
 
   if (!response.ok) {
-    throw await readError(response, 'Failed to get suggestions');
+    throw await readError(response, '추천 질문을 만들지 못했습니다.');
   }
 
   return response.json();
@@ -101,7 +133,7 @@ export const extractPrinciples = async (
   });
 
   if (!response.ok) {
-    throw await readError(response, 'Failed to extract principles');
+    throw await readError(response, '작업 원칙을 추출하지 못했습니다.');
   }
 
   const data = await response.json();
@@ -122,7 +154,7 @@ export const analyzeProjectAddress = async (
   });
 
   if (!response.ok) {
-    throw await readError(response, 'Failed to analyze address');
+    throw await readError(response, '주소 분석에 실패했습니다.');
   }
 
   return response.json();
