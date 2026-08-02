@@ -6,16 +6,14 @@ type SnapshotDocument = {
   exists: () => boolean;
 };
 
+type SnapshotCompat = SnapshotDocument & {
+  docs: SnapshotDocument[];
+};
+
 declare module '../services/firebase' {
   export function onSnapshot(
     ref: unknown,
-    onNext: (snapshot: { docs: SnapshotDocument[] }) => void,
-    onError?: (error: any) => void,
-  ): () => void;
-
-  export function onSnapshot(
-    ref: unknown,
-    onNext: (snapshot: SnapshotDocument) => void,
+    onNext: (snapshot: SnapshotCompat) => void,
     onError?: (error: any) => void,
   ): () => void;
 }
