@@ -4,20 +4,9 @@
  */
 
 import React, { useState } from 'react';
-import {
-  ArrowRight,
-  Briefcase,
-  CheckCircle2,
-  Mail,
-  Scale,
-  ShieldCheck,
-  Sparkles,
-} from 'lucide-react';
-import { motion } from 'motion/react';
 import { supabase } from '../services/supabaseClient';
 
 interface LoginScreenProps {
-  // Kept optional while the parent app is migrated away from the old Google handler.
   onLogin?: () => void;
   isLoading?: boolean;
 }
@@ -60,135 +49,78 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ isLoading = false }) => {
   };
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center p-6 relative overflow-hidden">
-      <div className="absolute top-0 left-0 w-full h-full overflow-hidden pointer-events-none">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-purple-100/50 rounded-full blur-[120px]" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-blue-100/50 rounded-full blur-[120px]" />
-      </div>
-
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8, ease: 'easeOut' }}
-        className="max-w-md w-full relative z-10"
-      >
-        <div className="bg-white rounded-[48px] shadow-2xl shadow-slate-200 border border-slate-100 p-12 text-center">
-          <div className="flex justify-center mb-8">
-            <div className="relative">
-              <div className="w-24 h-24 bg-slate-900 rounded-[32px] flex items-center justify-center shadow-xl rotate-3">
-                <Scale size={42} className="text-white" />
-              </div>
-              <div className="absolute -top-3 -right-3 w-10 h-10 bg-purple-600 rounded-2xl flex items-center justify-center shadow-lg -rotate-12">
-                <Sparkles size={20} className="text-white" />
-              </div>
-            </div>
+    <main className="min-h-screen bg-slate-50 flex items-center justify-center p-5">
+      <section className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-7 sm:p-10 shadow-xl shadow-slate-200/60">
+        <div className="mb-8">
+          <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-900 text-xl font-black text-white">
+            AR
           </div>
-
-          <h1 className="text-3xl font-black text-slate-900 tracking-tight mb-3">
+          <h1 className="text-3xl font-black tracking-tight text-slate-900">
             ARCenter
           </h1>
-          <p className="text-slate-500 font-medium mb-8 leading-relaxed">
-            건축 프로젝트별 법규 검토와<br />
-            근거 자료를 안전하게 관리합니다.
+          <p className="mt-3 text-sm leading-6 text-slate-500">
+            건축 프로젝트별 법규 자료와 검토 기록을 안전하게 관리합니다.
           </p>
+        </div>
 
-          <div className="grid grid-cols-2 gap-3 mb-8">
-            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 text-left">
-              <ShieldCheck size={20} className="text-purple-600 mb-3" />
-              <p className="text-xs font-black text-slate-900">사용자별 보안</p>
-              <p className="text-[10px] text-slate-500 mt-1">Private workspace</p>
-            </div>
-            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 text-left">
-              <Briefcase size={20} className="text-blue-600 mb-3" />
-              <p className="text-xs font-black text-slate-900">프로젝트 기록</p>
-              <p className="text-[10px] text-slate-500 mt-1">Review history</p>
-            </div>
+        {isSent ? (
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5">
+            <p className="font-bold text-emerald-950">로그인 메일을 보냈습니다.</p>
+            <p className="mt-2 break-all text-sm leading-6 text-emerald-800">
+              {email.trim()} 메일함에서 로그인 링크를 눌러 주세요.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setIsSent(false);
+                setErrorMessage('');
+              }}
+              className="mt-4 text-sm font-bold text-emerald-800 underline underline-offset-4"
+            >
+              다른 이메일 사용
+            </button>
           </div>
-
-          {isSent ? (
-            <div className="rounded-3xl border border-emerald-100 bg-emerald-50 p-6 text-left">
-              <div className="flex items-start gap-3">
-                <CheckCircle2 className="text-emerald-600 shrink-0 mt-0.5" size={22} />
-                <div>
-                  <p className="text-sm font-black text-emerald-950">로그인 메일을 보냈습니다.</p>
-                  <p className="text-xs text-emerald-800 mt-2 leading-relaxed break-all">
-                    {email.trim()} 메일함에서 로그인 링크를 눌러 주세요.
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsSent(false);
-                  setErrorMessage('');
-                }}
-                className="mt-5 text-xs font-bold text-emerald-800 underline underline-offset-4"
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label
+                htmlFor="login-email"
+                className="mb-2 block text-sm font-bold text-slate-700"
               >
-                다른 이메일 사용
-              </button>
-            </div>
-          ) : (
-            <form onSubmit={handleSubmit} className="space-y-3 text-left">
-              <label htmlFor="login-email" className="block text-xs font-black text-slate-700 ml-1">
                 이메일
               </label>
-              <div className="relative">
-                <Mail
-                  size={18}
-                  className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"
-                />
-                <input
-                  id="login-email"
-                  type="email"
-                  autoComplete="email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  placeholder="name@example.com"
-                  disabled={isSending || isLoading}
-                  className="w-full rounded-2xl border border-slate-200 bg-white py-4 pl-12 pr-4 text-sm text-slate-900 outline-none transition focus:border-purple-400 focus:ring-4 focus:ring-purple-100 disabled:opacity-60"
-                />
-              </div>
-
-              {errorMessage && (
-                <p className="text-xs font-medium text-red-600 px-1">{errorMessage}</p>
-              )}
-
-              <button
-                type="submit"
+              <input
+                id="login-email"
+                type="email"
+                autoComplete="email"
+                inputMode="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="name@example.com"
                 disabled={isSending || isLoading}
-                className="w-full py-4 bg-slate-900 hover:bg-purple-600 text-white rounded-2xl font-black text-sm transition-all shadow-xl shadow-slate-200 hover:shadow-purple-100 active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-50"
-              >
-                {isSending || isLoading ? (
-                  <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                ) : (
-                  <>
-                    로그인 링크 받기
-                    <ArrowRight size={17} />
-                  </>
-                )}
-              </button>
-            </form>
-          )}
+                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-4 text-base text-slate-900 outline-none transition focus:border-slate-900 focus:ring-4 focus:ring-slate-100 disabled:opacity-60"
+              />
+            </div>
 
-          <p className="mt-7 text-[11px] text-slate-400 leading-relaxed">
-            비밀번호 없이 이메일로 받은 일회용 링크를 통해 로그인합니다.
-          </p>
-        </div>
+            {errorMessage && (
+              <p className="text-sm font-medium text-red-600">{errorMessage}</p>
+            )}
 
-        <div className="mt-8 flex items-center justify-center gap-6 opacity-40">
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 bg-green-500 rounded-full" />
-            <span className="text-[10px] font-black tracking-widest text-slate-500 uppercase">
-              System Live
-            </span>
-          </div>
-          <div className="w-1 h-1 bg-slate-300 rounded-full" />
-          <span className="text-[10px] font-black tracking-widest text-slate-500 uppercase">
-            Supabase Auth
-          </span>
-        </div>
-      </motion.div>
-    </div>
+            <button
+              type="submit"
+              disabled={isSending || isLoading}
+              className="w-full rounded-2xl bg-slate-900 px-4 py-4 text-sm font-black text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isSending || isLoading ? '전송 중…' : '로그인 링크 받기'}
+            </button>
+          </form>
+        )}
+
+        <p className="mt-7 text-xs leading-5 text-slate-400">
+          비밀번호 없이 이메일로 받은 일회용 링크를 통해 로그인합니다.
+        </p>
+      </section>
+    </main>
   );
 };
 
