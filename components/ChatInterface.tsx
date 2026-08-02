@@ -4,16 +4,16 @@
 */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { ChatMessage, MessageSender, KnowledgeUrl, ToastNotification } from '../types'; 
+import { ChatMessage, MessageSender, ToastNotification } from '../types';
 import MessageItem from './MessageItem';
-import { Send, Menu, Globe, Lightbulb, Info, AlertTriangle, XCircle, X, MapPin, LogIn, LogOut, User as UserIcon } from 'lucide-react';
+import { Send, Menu, Globe, Lightbulb, Info, AlertTriangle, XCircle, X, MapPin, LogIn, LogOut, User as UserIcon, Sparkles } from 'lucide-react';
 import { User } from '../services/firebase';
 
-// --- Toast Notification Component ---
 interface ToastProps {
   notification: ToastNotification;
   onClose: (id: string) => void;
 }
+
 const Toast: React.FC<ToastProps> = ({ notification, onClose }) => {
   const { id, message, type } = notification;
   const [visible, setVisible] = useState(false);
@@ -64,10 +64,9 @@ const Toast: React.FC<ToastProps> = ({ notification, onClose }) => {
   );
 };
 
-
 interface ChatInterfaceProps {
   messages: ChatMessage[];
-  onSendMessage: (query: string) => void;
+  onSendMessage: (query: string) => void | Promise<void>;
   isLoading: boolean;
   placeholderText?: string;
   initialQuerySuggestions?: string[];
@@ -88,10 +87,24 @@ interface ChatInterfaceProps {
   isMessagesLoading?: boolean;
 }
 
-const ChatInterface: React.FC<ChatInterfaceProps> = ({ 
-  messages, 
+function friendlySendError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error || '');
+
+  if (/load failed|failed to fetch|networkerror|network request failed/i.test(raw)) {
+    return '임시 서버 연결이 원활하지 않습니다. 잠시 후 다시 시도해 주세요.';
+  }
+
+  if (/unsupported data path|group|project/i.test(raw)) {
+    return '먼저 왼쪽에서 프로젝트 또는 자료실 폴더를 선택해 주세요.';
+  }
+
+  return raw || '질문을 전송하지 못했습니다. 잠시 후 다시 시도해 주세요.';
+}
+
+const ChatInterface: React.FC<ChatInterfaceProps> = ({
+  messages,
   onSendMessage,
-  isLoading, 
+  isLoading,
   placeholderText,
   initialQuerySuggestions,
   onSuggestedQueryClick,
@@ -111,32 +124,54 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   isMessagesLoading = false,
 }) => {
   const [userQuery, setUserQuery] = useState('');
+  const [sendError, setSendError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  const hasSelectedContext = Boolean(
+    activeGroupPath && activeGroupPath !== '없음',
+  );
+  const hasVisibleModelLoader = messages.some(
+    (message) => message.sender === MessageSender.MODEL && message.isLoading,
+  );
+
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  useEffect(scrollToBottom, [messages]);
+  useEffect(scrollToBottom, [messages, isLoading]);
 
-  const handleSend = () => {
-    if (userQuery.trim() && !isLoading) {
-      onSendMessage(userQuery.trim());
+  const handleSend = async () => {
+    const trimmedQuery = userQuery.trim();
+    if (!trimmedQuery || isLoading || isFetchingSuggestions) return;
+
+    if (!hasSelectedContext) {
+      setSendError('먼저 왼쪽에서 프로젝트 또는 자료실 폴더를 선택해 주세요.');
+      return;
+    }
+
+    setSendError(null);
+
+    try {
+      await Promise.resolve(onSendMessage(trimmedQuery));
       setUserQuery('');
+    } catch (error) {
+      setSendError(friendlySendError(error));
     }
   };
 
   const canShowSuggestionsArea = messages.filter(m => m.sender !== MessageSender.SYSTEM).length < 1;
   const suggestionsToShow = initialQuerySuggestions || [];
   const hasSuggestionsToShow = suggestionsToShow.length > 0;
-
+  const effectivePlaceholder = !hasSelectedContext
+    ? '왼쪽에서 프로젝트 또는 자료실 폴더를 먼저 선택해 주세요.'
+    : placeholderText || '질문을 입력하세요...';
 
   return (
     <div className="relative flex flex-col h-full bg-white rounded-lg shadow-md border border-gray-200">
       <div className="p-4 border-b border-gray-200 flex justify-between items-center">
         <div className="flex items-center gap-3 min-w-0">
-           {onToggleSidebar && !isSidebarOpen && (
-            <button 
+          {onToggleSidebar && !isSidebarOpen && (
+            <button
               onClick={onToggleSidebar}
               className="p-2 text-gray-500 hover:text-gray-900 rounded-md hover:bg-gray-100 transition-colors flex-shrink-0"
               aria-label="자료실 열기"
@@ -147,9 +182,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
           <div className="min-w-0">
             <h2 className="text-lg font-semibold text-gray-800 truncate">건축법규검토 어시스턴트</h2>
             {activeGroupPath && (
-                <p className="text-xs text-gray-500 mt-1 truncate" title={`검색 범위: ${activeGroupPath}`}>
-                    <span className="font-semibold">검색 범위:</span> {activeGroupPath}
-                </p>
+              <p className="text-xs text-gray-500 mt-1 truncate" title={`검색 범위: ${activeGroupPath}`}>
+                <span className="font-semibold">검색 범위:</span> {activeGroupPath}
+              </p>
             )}
           </div>
         </div>
@@ -187,7 +222,24 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         </div>
       </div>
 
-      {/* Project Context Banner */}
+      <div className="bg-amber-50 border-b border-amber-200 px-4 py-2.5 flex items-start gap-2 text-amber-900">
+        <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
+        <p className="text-xs leading-relaxed">
+          <span className="font-bold">임시 운영 안내</span>
+          <span className="mx-1">·</span>
+          GCP 서버 문제로 현재 임시 서버에서 운영 중입니다. 일부 기능이 느리거나 일시적으로 실패할 수 있습니다.
+        </p>
+      </div>
+
+      {isSearchEnabled && (
+        <div className="bg-blue-50 border-b border-blue-100 px-4 py-2 flex items-center gap-2 text-blue-800">
+          <Globe size={14} className="flex-shrink-0" />
+          <p className="text-xs font-medium">
+            웹 검색 모드입니다. 프로젝트 자료 대신 최신 공개 웹 정보를 검색하고 출처를 함께 표시합니다.
+          </p>
+        </div>
+      )}
+
       {activeGroupAddress && !isSearchEnabled && (
         <div className="bg-blue-600 text-white px-4 py-2 flex items-center justify-between shadow-md z-10 animate-in fade-in slide-in-from-top duration-300">
           <div className="flex items-center gap-2 min-w-0">
@@ -198,7 +250,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
             </div>
           </div>
           <div className="flex items-center gap-1 ml-4 flex-shrink-0">
-             <div className="px-2 py-0.5 bg-white/20 rounded text-[10px] font-bold uppercase tracking-wider">Project Mode</div>
+            <div className="px-2 py-0.5 bg-white/20 rounded text-[10px] font-bold uppercase tracking-wider">Project Mode</div>
           </div>
         </div>
       )}
@@ -220,13 +272,26 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
             </div>
           ) : (
             messages.map((msg) => (
-              <MessageItem
-                key={msg.id}
-                message={msg}
-              />
+              <MessageItem key={msg.id} message={msg} />
             ))
           )}
-          
+
+          {isLoading && !isMessagesLoading && !hasVisibleModelLoader && (
+            <div className="flex mb-6 justify-start" aria-live="polite">
+              <div className="flex items-start gap-3 max-w-[90%]">
+                <div className="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center flex-shrink-0 shadow-md">
+                  <Sparkles size={18} />
+                </div>
+                <div className="p-3 rounded-lg shadow-md bg-white border border-gray-200">
+                  <div className="flex items-center gap-3 text-sm text-gray-600">
+                    <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                    <span>답변을 생성하고 있습니다...</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {canShowSuggestionsArea && hasSuggestionsToShow && onSuggestedQueryClick && (
             <div className="my-4 px-1">
               <p className="text-xs text-gray-500 mb-2 font-medium">다음 중 하나를 시도해 보세요:</p>
@@ -246,23 +311,23 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
           {canShowSuggestionsArea && !hasSuggestionsToShow && onFetchSuggestions && (
             <div className="my-4 px-1 text-center">
-                <button
-                  onClick={onFetchSuggestions}
-                  disabled={isFetchingSuggestions}
-                  className="bg-white border border-gray-300 text-gray-700 px-6 py-2.5 rounded-full text-sm hover:bg-gray-50 transition-all shadow-sm hover:shadow-md disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-wait flex items-center gap-2 mx-auto font-medium"
-                >
-                  {isFetchingSuggestions ? (
-                    <>
-                      <div className="w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin"></div>
-                      <span>제안 가져오는 중...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Lightbulb size={18} className="text-yellow-500" />
-                      <span>질문 제안받기</span>
-                    </>
-                  )}
-                </button>
+              <button
+                onClick={onFetchSuggestions}
+                disabled={isFetchingSuggestions || !hasSelectedContext}
+                className="bg-white border border-gray-300 text-gray-700 px-6 py-2.5 rounded-full text-sm hover:bg-gray-50 transition-all shadow-sm hover:shadow-md disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-wait flex items-center gap-2 mx-auto font-medium"
+              >
+                {isFetchingSuggestions ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin"></div>
+                    <span>제안 가져오는 중...</span>
+                  </>
+                ) : (
+                  <>
+                    <Lightbulb size={18} className="text-yellow-500" />
+                    <span>질문 제안받기</span>
+                  </>
+                )}
+              </button>
             </div>
           )}
 
@@ -272,18 +337,27 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
       <div className="p-4 border-t border-gray-200 bg-white rounded-b-lg">
         <div className="max-w-4xl mx-auto w-full">
+          {sendError && (
+            <div className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 flex items-start gap-2" role="alert">
+              <XCircle size={15} className="mt-0.5 flex-shrink-0" />
+              <span>{sendError}</span>
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <textarea
               value={userQuery}
-              onChange={(e) => setUserQuery(e.target.value)}
-              placeholder={placeholderText || "질문을 입력하세요..."}
-              className="flex-grow h-10 min-h-[40px] py-2 px-3 border border-gray-300 bg-white text-gray-800 placeholder-gray-400 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all resize-none text-sm"
+              onChange={(e) => {
+                setUserQuery(e.target.value);
+                if (sendError) setSendError(null);
+              }}
+              placeholder={effectivePlaceholder}
+              className="flex-grow h-10 min-h-[40px] py-2 px-3 border border-gray-300 bg-white text-gray-800 placeholder-gray-400 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all resize-none text-sm disabled:bg-gray-100"
               rows={1}
-              disabled={isLoading || isFetchingSuggestions}
-              onKeyPress={(e) => {
+              disabled={isLoading || isFetchingSuggestions || !hasSelectedContext}
+              onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
-                  handleSend();
+                  void handleSend();
                 }
               }}
             />
@@ -293,8 +367,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 onClick={onToggleSearch}
                 disabled={isLoading || isFetchingSuggestions}
                 className={`h-10 w-10 p-2 rounded-lg transition-all disabled:bg-gray-200 disabled:text-gray-400 flex items-center justify-center flex-shrink-0 relative ${
-                  isSearchEnabled 
-                    ? 'bg-blue-100 text-blue-600 hover:bg-blue-200/60 ring-1 ring-blue-500' 
+                  isSearchEnabled
+                    ? 'bg-blue-100 text-blue-600 hover:bg-blue-200/60 ring-1 ring-blue-500'
                     : 'bg-gray-200 hover:bg-gray-300 text-gray-600'
                 }`}
                 aria-label="웹 검색 토글"
@@ -305,25 +379,24 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
               </button>
             )}
             <button
-              onClick={handleSend}
-              disabled={isLoading || isFetchingSuggestions || !userQuery.trim()}
+              onClick={() => void handleSend()}
+              disabled={isLoading || isFetchingSuggestions || !userQuery.trim() || !hasSelectedContext}
               className="h-10 w-10 p-2 bg-gray-800 hover:bg-gray-700 text-white rounded-lg transition-colors disabled:bg-gray-300 disabled:text-gray-500 flex items-center justify-center flex-shrink-0"
               aria-label="메시지 보내기"
             >
-              {(isLoading && messages[messages.length-1]?.isLoading && messages[messages.length-1]?.sender === MessageSender.MODEL) ? 
-                <div className="w-5 h-5 border-2 border-gray-500 border-t-transparent rounded-full animate-spin"></div> 
+              {isLoading
+                ? <div className="w-5 h-5 border-2 border-gray-500 border-t-transparent rounded-full animate-spin"></div>
                 : <Send size={20} />
               }
             </button>
           </div>
         </div>
       </div>
-      
-      {/* Toast Container */}
+
       <div aria-live="assertive" className="absolute bottom-24 left-1/2 -translate-x-1/2 w-full max-w-lg px-4 flex flex-col items-center space-y-2 pointer-events-none z-10">
-          {notifications.map(notification => (
-              <Toast key={notification.id} notification={notification} onClose={onRemoveNotification} />
-          ))}
+        {notifications.map(notification => (
+          <Toast key={notification.id} notification={notification} onClose={onRemoveNotification} />
+        ))}
       </div>
     </div>
   );
