@@ -225,9 +225,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       <div className="bg-amber-50 border-b border-amber-200 px-4 py-2.5 flex items-start gap-2 text-amber-900">
         <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
         <p className="text-xs leading-relaxed">
-          <span className="font-bold">임시 운영 안내</span>
+          <span className="font-bold">제한 운영 안내</span>
           <span className="mx-1">·</span>
-          GCP 서버 문제로 현재 임시 서버에서 운영 중입니다. 일부 기능이 느리거나 일시적으로 실패할 수 있습니다.
+          GCP 서버 문제로 현재 NCP 임시 서버에서 제한 운영 중입니다. 빠른 체험 프로젝트는 핵심 법령 6종을 제공하며, 질문당 법령 URL 최대 4개와 첨부파일 최대 2개를 확인합니다. 주소 자동조회·법정 기준 계산 등 외부 FastAPI 연동 기능은 API 상태에 따라 지연되거나 실패할 수 있습니다.
         </p>
       </div>
 
