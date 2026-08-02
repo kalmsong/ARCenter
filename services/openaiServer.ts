@@ -55,32 +55,30 @@ async function createStructuredResponse<T>(options: {
   return JSON.parse(text) as T;
 }
 
-function extractBase64(value: string): string | null {
-  const commaIndex = value.indexOf(',');
-  if (value.startsWith('data:') && commaIndex >= 0) {
-    return value.slice(commaIndex + 1);
-  }
+function toFileDataUri(file: KnowledgeFile): string | null {
+  const value = file.base64Data;
+  if (!value) return null;
+  if (value.startsWith('data:')) return value;
 
-  return value || null;
+  const mimeType = file.mimeType || 'application/octet-stream';
+  return `data:${mimeType};base64,${value}`;
 }
 
 function buildFileContent(files: KnowledgeFile[]): any[] {
   const content: any[] = [];
 
   for (const file of files) {
-    if (!file.base64Data) continue;
+    const fileData = toFileDataUri(file);
+    if (!fileData) continue;
 
     if (file.mimeType?.startsWith('image/')) {
       content.push({
         type: 'input_image',
-        image_url: file.base64Data,
+        image_url: fileData,
         detail: 'auto',
       });
       continue;
     }
-
-    const fileData = extractBase64(file.base64Data);
-    if (!fileData) continue;
 
     content.push({
       type: 'input_file',
@@ -252,7 +250,7 @@ export async function getInitialSuggestions({
   const result = await createStructuredResponse<{ suggestions: string[] }>({
     name: 'initial_suggestions',
     instructions:
-      'Generate concise, actionable Korean questions for an architect. Return only the requested structure.',
+      'Generate 3 to 4 concise, actionable Korean questions for an architect. Return only the requested structure.',
     input: `현재 폴더: ${folderName}\n\n참고 URL:\n${urlsForPrompt.join('\n')}\n\n이 자료를 바탕으로 사용자가 물어볼 만한 구체적인 질문 3~4개를 제안하세요.`,
     schema: {
       type: 'object',
@@ -260,8 +258,6 @@ export async function getInitialSuggestions({
       properties: {
         suggestions: {
           type: 'array',
-          minItems: 3,
-          maxItems: 4,
           items: { type: 'string' },
         },
       },
@@ -269,7 +265,9 @@ export async function getInitialSuggestions({
     },
   });
 
-  return { text: JSON.stringify(result) };
+  return {
+    text: JSON.stringify({ suggestions: result.suggestions.slice(0, 4) }),
+  };
 }
 
 export async function extractPrinciples({
@@ -280,7 +278,7 @@ export async function extractPrinciples({
   const result = await createStructuredResponse<{ principles: string[] }>({
     name: 'personal_principles',
     instructions:
-      'Extract concise and actionable personal work principles in Korean.',
+      'Extract 1 to 3 concise and actionable personal work principles in Korean.',
     input: `다음 대화에서 사용자가 중요하게 여기는 작업 원칙을 1~3개 추출하세요.\n\n${conversation}`,
     schema: {
       type: 'object',
@@ -288,8 +286,6 @@ export async function extractPrinciples({
       properties: {
         principles: {
           type: 'array',
-          minItems: 1,
-          maxItems: 3,
           items: { type: 'string' },
         },
       },
@@ -297,7 +293,7 @@ export async function extractPrinciples({
     },
   });
 
-  return result.principles;
+  return result.principles.slice(0, 3);
 }
 
 export async function analyzeProjectAddress({
@@ -316,7 +312,7 @@ export async function analyzeProjectAddress({
   }>({
     name: 'address_analysis',
     instructions:
-      'You are a Korean architectural regulation specialist. Match only folder IDs that exist in the supplied list.',
+      'You are a Korean architectural regulation specialist. Suggest 3 to 5 laws and match only folder IDs that exist in the supplied list.',
     input: `프로젝트 주소:\n${address}\n\n사용자 라이브러리 폴더:\n${JSON.stringify(libraryFolders)}\n\n주소에 관련성이 높은 건축 법규 3~5개와 관련 폴더 ID를 제안하세요.`,
     schema: {
       type: 'object',
@@ -324,8 +320,6 @@ export async function analyzeProjectAddress({
       properties: {
         suggested_laws: {
           type: 'array',
-          minItems: 3,
-          maxItems: 5,
           items: { type: 'string' },
         },
         matched_folder_ids: {
@@ -340,7 +334,7 @@ export async function analyzeProjectAddress({
   const validFolderIds = new Set(libraryFolders.map((folder) => folder.id));
 
   return {
-    suggestedLaws: result.suggested_laws,
+    suggestedLaws: result.suggested_laws.slice(0, 5),
     matchedLibraryFolderIds: result.matched_folder_ids.filter((id) =>
       validFolderIds.has(id),
     ),
