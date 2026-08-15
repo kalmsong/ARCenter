@@ -27,6 +27,7 @@ declare global {
 }
 
 const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || '127.0.0.1';
 const AIRTECT_API_BASE_URL =
   process.env.AIRTECT_API_BASE_URL || 'https://api.airtect.kr';
 const REQUEST_TIMEOUT_MS = 25_000;
@@ -425,8 +426,8 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`ARCenter listening on http://0.0.0.0:${PORT}`);
+  app.listen(PORT, HOST, () => {
+    console.log(`ARCenter listening on http://${HOST}:${PORT}`);
   });
 }
 
