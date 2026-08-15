@@ -12,6 +12,7 @@ import {
 async function startServer() {
   const app = express();
   const PORT = 3000;
+  const HOST = process.env.HOST || "127.0.0.1";
 
   app.use(express.json({ limit: '50mb' }));
 
@@ -195,8 +196,8 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  app.listen(PORT, HOST, () => {
+    console.log(`Server running on http://${HOST}:${PORT}`);
   });
 }
 
